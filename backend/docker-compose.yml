@@ -1,0 +1,91 @@
+services:
+  redis:
+    image: redis:8.2-alpine
+    restart: unless-stopped
+    command: ["redis-server","--appendonly","yes"]
+    ports:
+      - "6379:6379"             # expõe p/ DBeaver/host, se não precisar pode remover
+    volumes:
+      - redis_data:/data
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres123
+      - POSTGRES_DB=codatende
+    ports:
+      - "5432:5432"             # expõe p/ DBeaver; remova se não precisar
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app_network
+    healthcheck:
+      # confere com as credenciais certas
+      test: ["CMD-SHELL", "pg_isready -U postgres -d codatende"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - ./backend/.env           # mantém, se você usa .env no backend
+    environment:
+      # ==== DB (alinhado ao Postgres acima) ====
+      - DB_DIALECT=postgres
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASS=postgres123
+      - DB_NAME=codatende
+      - DATABASE_URL=postgres://postgres:postgres123@postgres:5432/codatende
+
+      # ==== Redis ====
+      - REDIS_URL=redis://redis:6379/0
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0      
+
+      # ==== URLs (externas p/ navegador) ====
+      - FRONTEND_URL=http://localhost:3000
+      - BACKEND_URL=http://localhost:8080
+    ports:
+      - "8080:3000"              # API disponível em http://localhost:8080
+    networks:
+      - app_network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"              # app web em http://localhost:3000
+    networks:
+      - app_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  app_network:
