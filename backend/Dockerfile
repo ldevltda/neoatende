@@ -44,8 +44,8 @@ COPY --from=deps /app/dist ./dist
 COPY --from=deps /app/package.json ./package.json
 COPY --from=deps /app/src ./src
 
-COPY backend/docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
+# COPY backend/docker-entrypoint.sh /app/docker-entrypoint.sh
+# RUN chmod +x /app/docker-entrypoint.sh
 
 EXPOSE 3000
 CMD ["/app/docker-entrypoint.sh"]
