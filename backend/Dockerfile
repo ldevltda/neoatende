@@ -14,11 +14,12 @@ RUN git config --global url."https://".insteadOf ssh://
 COPY backend/package.json backend/package-lock.json ./
 RUN npm ci
 
-# Código do backend (se .dockerignore estiver ignorando .sh, tudo bem; vamos gerar depois)
+# Código do backend (se .dockerignore ignorar .sh, ok; geramos abaixo)
 COPY backend/ .
 
-# (Opcional) Copia certificados se a pasta existir no contexto
-COPY certificates ./certs-temp
+# (REMOVIDO) COPY certificates ./certs-temp   <-- causava erro no Railway
+# Em vez disso, criamos a pasta (vazia) para o script lidar com 'não encontrado'
+RUN mkdir -p /app/certs-temp
 
 # ---- copy_cert_assets.sh (sempre gerado dentro da imagem) ----
 RUN cat > /app/copy_cert_assets.sh <<'EOF'
