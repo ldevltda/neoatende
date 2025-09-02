@@ -12,37 +12,22 @@ RUN git config --global url."https://".insteadOf ssh://
 COPY backend/package.json backend/package-lock.json ./
 RUN npm ci
 
-# Código do backend (inclui docker-entrypoint.sh e, se existir, copy_cert_assets.sh)
+# Código do backend (inclui docker-entrypoint.sh se .dockerignore permitir)
 COPY backend/ .
 
-# 🔧 AJUSTE 1: garanta que SEMPRE exista um entrypoint em /app (fallback se faltar no repo)
-RUN if [ ! -f ./docker-entrypoint.sh ]; then \
-      echo "Criando docker-entrypoint.sh fallback"; \
-      printf '%s\n' \
-        '#!/bin/sh' \
-        'set -e' \
-        'echo "[entrypoint] Iniciando backend..."' \
-        'if [ ! -d dist ]; then echo "[entrypoint] dist/ ausente; executando build"; npm run build || true; fi' \
-        'if [ -f dist/server.js ]; then exec node dist/server.js; fi' \
-        'if [ -f dist/main.js ];   then exec node dist/main.js;   fi' \
-        'if [ -f dist/index.js ];  then exec node dist/index.js;  fi' \
-        'echo "[entrypoint] Nenhum arquivo dist/{server,main,index}.js encontrado"; ls -la dist || true; exit 1' \
-      > ./docker-entrypoint.sh; \
-    fi \
- && chmod +x ./docker-entrypoint.sh
+# (Garantia extra) Copia explicitamente o entrypoint para a raiz do estágio deps
+# Se o arquivo não existir no contexto (por causa do .dockerignore), falha aqui — ver ajuste no .dockerignore abaixo
+COPY backend/docker-entrypoint.sh ./docker-entrypoint.sh
+RUN chmod +x ./docker-entrypoint.sh
 
-# 🔧 AJUSTE 2: torne certificados opcionais (SEM COPY que falha quando a pasta não existe)
-#    - Em vez de "COPY certificates ./certs-temp", apenas crie a pasta.
-#    - Se você realmente tiver a pasta, pode reativar o COPY mais tarde.
-RUN mkdir -p /app/certs-temp
-
-# 🔧 AJUSTE 3: rode o script de certificados SE ele existir (sem falhar se não existir)
-RUN if [ -f ./copy_cert_assets.sh ]; then \
-      chmod +x ./copy_cert_assets.sh && ./copy_cert_assets.sh || true; \
-    else \
-      echo "copy_cert_assets.sh não encontrado; seguindo sem copiar certificados."; \
-    fi \
- && rm -rf /app/certs-temp || true
+# Certificados e script
+# OBS: se a pasta "certificates" não existir no contexto, esse COPY quebra. 
+# Se não for usar certificados agora, comente as 3 linhas seguintes.
+COPY certificates ./certs-temp
+COPY backend/copy_cert_assets.sh ./copy_cert_assets.sh
+RUN chmod +x copy_cert_assets.sh \
+  && ./copy_cert_assets.sh \
+  && rm -rf ./certs-temp
 
 # Build (se houver)
 RUN npm run build || echo "Sem etapa de build explícita"
@@ -70,7 +55,7 @@ COPY --from=deps /app/dist ./dist
 COPY --from=deps /app/package.json ./package.json
 COPY --from=deps /app/src ./src
 
-# ✅ Agora este COPY NUNCA quebra, porque garantimos o arquivo no estágio deps (fallback)
+# ✅ Traga o entrypoint do estágio deps (não depende mais do caminho "backend/..." no contexto do runner)
 COPY --from=deps /app/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
