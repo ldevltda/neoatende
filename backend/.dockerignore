@@ -1,8 +1,11 @@
-node_modules
 npm-debug.log
 yarn-error.log
 dist
 build
-coverage
 .tmp
+**/node_modules
+.git
+.gitignore
+.vscode
 .DS_Store
+**/coverage
