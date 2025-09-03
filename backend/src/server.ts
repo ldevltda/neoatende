@@ -8,10 +8,12 @@ import { startQueueProcess } from "./queues";
 import { TransferTicketQueue } from "./wbotTransferTicketQueue";
 import cron from "node-cron";
 
-const server = app.listen(process.env.PORT, '0.0.0.0', async () => {
+const port = Number(process.env.PORT) || 3000;
+
+const server = app.listen(port, '0.0.0.0', async () => {
   const companies = await Company.findAll();
   const allPromises: any[] = [];
-  
+
   companies.map(async c => {
     const promise = StartAllWhatsAppsSessions(c.id);
     allPromises.push(promise);
@@ -21,7 +23,7 @@ const server = app.listen(process.env.PORT, '0.0.0.0', async () => {
     startQueueProcess();
   });
 
-  logger.info(`Server started on port: ${process.env.PORT}`);
+  logger.info(`Server started on port: ${port}`);
 });
 
 cron.schedule("* * * * *", async () => {
