@@ -1,12 +1,15 @@
 import axios from "axios";
 
+const baseURL =
+  process.env.REACT_APP_BACKEND_URL || window.location.origin;
+
 const api = axios.create({
-	baseURL: "http://localhost:8080",
-	withCredentials: true,
+  baseURL,
+  withCredentials: true,
 });
 
 export const openApi = axios.create({
-	baseURL: "http://localhost:8080"
+  baseURL,
 });
 
 export default api;
