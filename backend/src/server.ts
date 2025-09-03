@@ -14,19 +14,22 @@ import cron from "node-cron";
 const port = parseInt(process.env.PORT || "3000", 10);
 
 const server = app.listen(port, "0.0.0.0", async () => {
-  const companies = await Company.findAll();
-  const allPromises: any[] = [];
+  try {
+    const companies = await Company.findAll();
+    const allPromises: any[] = [];
 
-  for (const c of companies) {
-    const promise = StartAllWhatsAppsSessions(c.id);
-    allPromises.push(promise);
-  }
+    for (const c of companies) {
+      const promise = StartAllWhatsAppsSessions(c.id);
+      allPromises.push(promise);
+    }
 
-  Promise.all(allPromises).then(() => {
+    await Promise.all(allPromises);
     startQueueProcess();
-  });
 
-  logger.info(`🚀 Server started on http://0.0.0.0:${port}`);
+    logger.info(`✅ Server started on http://0.0.0.0:${port}`);
+  } catch (error) {
+    logger.error("❌ Erro ao iniciar servidor:", error);
+  }
 });
 
 cron.schedule("* * * * *", async () => {

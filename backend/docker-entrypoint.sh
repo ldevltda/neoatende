@@ -60,6 +60,10 @@ npx sequelize db:seed:all --url "$DATABASE_URL" --seeders-path dist/database/see
   && printf "${GREEN}✅ Seeds OK${NC}\n" \
   || printf "${YELLOW}⚠️  Seeds falharam (talvez já rodados)${NC}\n"
 
+# Garante que escute no IP e porta corretos
+export HOST=0.0.0.0
+export PORT=${PORT:-3000}
+
 # Sobe app
 printf "${YELLOW}🚀 Iniciando aplicação...${NC}\n"
 exec node dist/server.js
