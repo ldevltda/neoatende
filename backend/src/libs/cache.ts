@@ -1,44 +1,64 @@
-// src/**/redisClient.ts (ou o caminho do seu arquivo atual)
+import IORedis, { RedisOptions } from "ioredis";
+import { REDIS_URI_CONNECTION } from "../config/redis";
+import * as crypto from "crypto";
+import dns from "dns/promises";
 
-import Redis from "ioredis";
-import crypto from "crypto";
-import { logger } from "../utils/logger"; // ajuste o caminho se preciso
-import { REDIS_URI_CONNECTION, REDIS_ENABLED } from "../config/redis";
+/**
+ * Criamos o cliente Redis de forma lazy (on-demand) para:
+ * - Resolver o hostname para IPv6 (AAAA), que é o que o Fly expõe no nslookup
+ * - Habilitar TLS automaticamente quando a URL for rediss://
+ * - Usar opções de reconexão estáveis
+ */
 
-/** Interface mínima que usamos do Redis */
-interface IRedisLite {
-  set(key: string, value: string, ...args: any[]): Promise<any>;
-  get(key: string): Promise<string | null>;
-  keys(pattern: string): Promise<string[]>;
-  del(...keys: string[]): Promise<number>;
-}
+let redisPromise: Promise<IORedis> | null = null;
 
-/** Cliente real (quando REDIS_ENABLED) ou um shim no-op */
-let client: IRedisLite;
+async function createRedis(): Promise<IORedis> {
+  // Faz o parse da URL (funciona para redis:// e rediss://)
+  const u = new URL(REDIS_URI_CONNECTION);
+  const isTLS = u.protocol === "rediss:";
+  const port = Number(u.port || "6379");
+  const username = u.username || undefined;
+  const password = u.password || undefined;
 
-if (REDIS_ENABLED && REDIS_URI_CONNECTION) {
-  const useTLS = REDIS_URI_CONNECTION.startsWith("rediss://");
-  const redis = new Redis(
-    REDIS_URI_CONNECTION,
-    useTLS ? { tls: {} } : undefined
-  );
+  // Resolve hostname para IPv6 (AAAA) — se falhar, usa o host original
+  let host = u.hostname;
+  try {
+    const { address } = await dns.lookup(u.hostname, { family: 6 });
+    host = address;
+  } catch {
+    // sem drama; segue com o hostname
+  }
 
-  redis.on("connect", () => logger.info("[redis] conectado"));
-  redis.on("error", (e) => logger.warn(`[redis] ${e.message}`));
-
-  client = redis as unknown as IRedisLite;
-} else {
-  logger.warn("[redis] desabilitado (sem REDIS_URL em produção).");
-  // shim seguro para produção sem Redis
-  client = {
-    async set() { return "OK"; },
-    async get() { return null; },
-    async keys() { return []; },
-    async del() { return 0; }
+  const options: RedisOptions = {
+    host,
+    port,
+    username,
+    password,
+    // família IPv6 melhora com Fly/Upstash
+    family: 6,
+    // opções de robustez
+    maxRetriesPerRequest: null,
+    enableReadyCheck: true,
+    retryStrategy: (times) => Math.min(times * 200, 2000),
+    reconnectOnError: () => true,
+    ...(isTLS ? { tls: {} } : {})
   };
+
+  const client = new IORedis(options);
+
+  // logs “amigáveis” (não derrubam o processo)
+  client.on("error", (e) => {
+    console.warn("[redis] " + e.message);
+  });
+
+  return client;
 }
 
-/** Helpers */
+async function getRedis(): Promise<IORedis> {
+  if (!redisPromise) redisPromise = createRedis();
+  return redisPromise;
+}
+
 function encryptParams(params: any) {
   const str = JSON.stringify(params);
   return crypto.createHash("sha256").update(str).digest("base64");
@@ -71,30 +91,34 @@ export async function set(
   option?: "EX" | "PX" | "EXAT" | "PXAT" | "NX" | "XX" | "KEEPTTL",
   optionValue?: string | number
 ) {
+  const redis = await getRedis();
   if (option !== undefined && optionValue !== undefined) {
-    // assinaturas variam; o ioredis resolve corretamente
-    // @ts-ignore
-    return client.set(key, value, option, optionValue);
+    // @ts-ignore – ioredis aceita as variações corretamente
+    return redis.set(key, value, option, optionValue);
   }
-  return client.set(key, value);
+  return redis.set(key, value);
 }
 
 export async function get(key: string) {
-  return client.get(key);
+  const redis = await getRedis();
+  return redis.get(key);
 }
 
 export async function getKeys(pattern: string) {
-  return client.keys(pattern);
+  const redis = await getRedis();
+  return redis.keys(pattern);
 }
 
 export async function del(key: string) {
-  return client.del(key);
+  const redis = await getRedis();
+  return redis.del(key);
 }
 
 export async function delFromPattern(pattern: string) {
-  const all = await getKeys(pattern);
+  const redis = await getRedis();
+  const all = await redis.keys(pattern);
   if (!all || all.length === 0) return;
-  await client.del(...all);
+  await redis.del(...all);
 }
 
 export const cacheLayer = {
@@ -107,3 +131,5 @@ export const cacheLayer = {
   delFromParams,
   delFromPattern
 };
+
+// teste
