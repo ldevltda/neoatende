@@ -3,7 +3,6 @@
   "version": "6.0.1",
   "description": "",
   "main": "dist/server.js",
-  "start": "node dist/server.js",
   "type": "commonjs",
   "scripts": {
     "build": "tsc",
