@@ -1,15 +1,19 @@
+// src/services/api.js
 import axios from "axios";
 
-const baseURL =
-  process.env.REACT_APP_BACKEND_URL || window.location.origin;
+const isDev = process.env.NODE_ENV === "development";
 
-const api = axios.create({
+// DEV: usa REACT_APP_DEV_API_URL ou localhost:8080
+// PROD: usa REACT_APP_API_URL ou a própria origem (caso haja reverse proxy)
+const baseURL = isDev
+  ? (process.env.REACT_APP_DEV_API_URL || "http://localhost:8080")
+  : (process.env.REACT_APP_API_URL || window.location.origin);
+
+export const api = axios.create({
   baseURL,
   withCredentials: true,
 });
 
-export const openApi = axios.create({
-  baseURL,
-});
+export const openApi = axios.create({ baseURL });
 
 export default api;
