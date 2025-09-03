@@ -36,6 +36,11 @@ app.use(cookieParser());
 app.use(express.json());
 app.use(Sentry.Handlers.requestHandler());
 app.use("/public", express.static(uploadConfig.directory));
+
+app.get("/", (_req, res) => {
+  res.redirect(process.env.FRONTEND_URL || "/login");
+});
+
 app.use(routes);
 
 app.use(Sentry.Handlers.errorHandler());
