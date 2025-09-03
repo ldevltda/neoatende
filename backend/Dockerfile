@@ -28,17 +28,18 @@ RUN npm run build || echo "Sem etapa de build explícita"
 # ============ runtime ============
 FROM node:20-alpine AS runner
 WORKDIR /app
+
 ENV NODE_ENV=production
 ENV TZ=America/Sao_Paulo
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-ENV HOST=0.0.0.0
-ENV PORT=3000
-ARG STACK_NAME
-ENV STACK_NAME=$STACK_NAME
+# 1) Só precisamos do 'nc'; use busybox-extras (vem com nc)
+RUN apk add --no-cache busybox-extras
 
+# 2) Reaproveita timezone do estágio de build (já funciona no Fly e local)
 COPY --from=deps /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=deps /etc/timezone /etc/timezone
+
+# resto igual
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/dist ./dist
 COPY --from=deps /app/package.json ./package.json
