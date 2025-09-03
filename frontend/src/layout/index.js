@@ -102,6 +102,12 @@ const useStyles = makeStyles((theme) => ({
   },
   menuButton: {
     marginRight: 36,
+    color: "#FFFFFF",                 // cor do ícone/botão
+    backgroundColor: "transparent",   // opcional
+    "&:hover": {
+      color: "#9FE870",               // cor ao passar o mouse
+      backgroundColor: "rgba(255,255,255,0.08)" // opcional, leve highlight
+    }
   },
   menuButtonHidden: {
     display: "none",
