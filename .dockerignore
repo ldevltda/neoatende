@@ -1,5 +1,5 @@
 # Arquivos e diretórios a serem ignorados no build Docker
-# Autor: Atendechat
+# Autor: Neoatende
 
 # Dependências
 node_modules/

@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # Script para copiar certificados personalizados
-# Autor: Atendechat
+# Autor: Neoatende
 # Versão: 2.0
 
 set -e

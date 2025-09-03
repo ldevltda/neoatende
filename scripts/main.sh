@@ -114,7 +114,7 @@ parse_args() {
     TOTAL_CPU="2"
     TOTAL_MEMORY="2048"
     COLOR="#113021"
-    TAB_NAME="Atendechat"
+    TAB_NAME="Neoatende"
     
     # Variáveis do módulo financeiro
     ENABLE_FINANCIAL="false"
