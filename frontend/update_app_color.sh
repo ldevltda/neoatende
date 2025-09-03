@@ -10,15 +10,15 @@ echo -e "${YELLOW}🎨 Atualizando cor da aplicação...${NC}"
 
 # Verifica se a variável de ambiente está definida
 if [[ -z "$REACT_APP_COLOR" ]]; then
-    echo -e "${YELLOW}⚠️  REACT_APP_COLOR não definida, usando valor padrão: #682EE3${NC}"
-    APP_COLOR="#682EE3"
+    echo -e "${YELLOW}⚠️  REACT_APP_COLOR não definida, usando valor padrão: ${NC}"
+    APP_COLOR=""
 else
     APP_COLOR="$REACT_APP_COLOR"
 fi
 
 # Valida se a cor é um hex válido
 if [[ ! "$APP_COLOR" =~ ^#[0-9A-Fa-f]{6}$ ]]; then
-    echo -e "${RED}❌ Erro: Cor inválida '$APP_COLOR'. Use formato hexadecimal (ex: #682EE3)${NC}"
+    echo -e "${RED}❌ Erro: Cor inválida '$APP_COLOR'. Use formato hexadecimal (ex: )${NC}"
     exit 1
 fi
 
@@ -46,14 +46,14 @@ files_processed=0
 for file in $js_files; do
     if [[ -f "$file" ]]; then
         # Verifica se o arquivo contém a cor antiga
-        if grep -q "#682EE3" "$file"; then
+        if grep -q "" "$file"; then
             echo -e "${YELLOW}📝 Processando: $file${NC}"
             
             # Conta quantas ocorrências existem no arquivo
-            old_count=$(grep -o "#682EE3" "$file" | wc -l)
+            old_count=$(grep -o "" "$file" | wc -l)
             
             # Faz o replace no arquivo
-            sed -i "s/#682EE3/$APP_COLOR/g" "$file"
+            sed -i "s//$APP_COLOR/g" "$file"
             
             # Verifica se o replace foi bem-sucedido
             if grep -q "$APP_COLOR" "$file"; then
@@ -75,13 +75,13 @@ if [[ $files_processed -gt 0 ]]; then
     echo -e "${GREEN}📊 Arquivos processados: $files_processed${NC}"
     echo -e "${GREEN}📊 Total de ocorrências substituídas: $total_replacements${NC}"
 else
-    echo -e "${YELLOW}⚠️  Nenhum arquivo com a cor #682EE3 foi encontrado${NC}"
+    echo -e "${YELLOW}⚠️  Nenhum arquivo com a cor  foi encontrado${NC}"
 fi
 
 # Verifica se ainda existem ocorrências da cor antiga em qualquer arquivo
-remaining_old=$(find src -name "*.js" -o -name "*.jsx" -type f -exec grep -l "#682EE3" {} \; 2>/dev/null)
+remaining_old=$(find src -name "*.js" -o -name "*.jsx" -type f -exec grep -l "" {} \; 2>/dev/null)
 if [[ -n "$remaining_old" ]]; then
-    echo -e "${YELLOW}⚠️  Aviso: Ainda existem ocorrências da cor antiga #682EE3 nos seguintes arquivos:${NC}"
+    echo -e "${YELLOW}⚠️  Aviso: Ainda existem ocorrências da cor antiga  nos seguintes arquivos:${NC}"
     echo "$remaining_old"
 else
     echo -e "${GREEN}✅ Todas as ocorrências da cor antiga foram substituídas!${NC}"

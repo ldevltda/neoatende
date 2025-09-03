@@ -113,7 +113,7 @@ parse_args() {
     FRONTEND_URL=""
     TOTAL_CPU="2"
     TOTAL_MEMORY="2048"
-    COLOR="#682EE3"
+    COLOR="#113021"
     TAB_NAME="Atendechat"
     
     # Variáveis do módulo financeiro
