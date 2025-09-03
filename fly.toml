@@ -5,6 +5,7 @@ primary_region = "gru"
 
 [build]
   image = "registry.fly.io/neoatende"
+  dockerfile = "backend/Dockerfile"
 
 [env]
   NODE_ENV = "production"
