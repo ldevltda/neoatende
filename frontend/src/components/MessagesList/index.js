@@ -372,26 +372,23 @@ const MessagesList = ({ ticket, ticketId, isGroup }) => {
     const companyId = localStorage.getItem("companyId");
     const socket = socketManager.getSocket(companyId);
 
-    // pega usuário logado para fallbacks
+    // Usuário logado (fallbacks)
     let loggedUser = {};
     try { loggedUser = JSON.parse(localStorage.getItem("user") || "{}"); } catch {}
 
     const room = String(ticket?.id || "");
-
     const join = () => { if (room) socket.emit("joinChatBox", room); };
 
-    // checa se o payload realmente é uma mensagem
-    const isMessagePayload = (data) => {
+    const isChatMessage = (data) => {
       const m = data?.message ?? data;
       if (!m || typeof m !== "object") return false;
-      // requisitos mínimos para tratarmos como mensagem
+      // requisitos mínimos para tratar como mensagem de chat
       return (
-        (m.ticketId != null || m.id != null) &&
-        (typeof m.fromMe === "boolean" || m.body != null || m.mediaType != null)
+        m.ticketId != null &&
+        (m.body != null || m.mediaType != null || typeof m.fromMe === "boolean")
       );
     };
 
-    // normaliza msg pro shape esperado pela UI
     const normalizeMsg = (raw) => {
       const msg = {
         ack: 0,
@@ -402,7 +399,7 @@ const MessagesList = ({ ticket, ticketId, isGroup }) => {
         ...raw
       };
 
-      // garantir contact
+      // contact básico (muitos componentes usam)
       if (!msg.contact && ticket?.contact) {
         msg.contact = {
           id: ticket.contact.id,
@@ -412,7 +409,7 @@ const MessagesList = ({ ticket, ticketId, isGroup }) => {
         };
       }
 
-      // garantir userId/user
+      // garantir userId/user SEMPRE
       if (msg.userId == null) msg.userId = (msg.user && msg.user.id) ?? loggedUser.id ?? 0;
       if (!msg.user) msg.user = { id: msg.userId, name: loggedUser.name || "Atendente" };
       else if (!msg.user.id) msg.user.id = msg.userId;
@@ -424,14 +421,12 @@ const MessagesList = ({ ticket, ticketId, isGroup }) => {
     };
 
     const onAppMessage = (data) => {
-      // admin recebe eventos que não são mensagens -> ignorar
-      if (!isMessagePayload(data)) return;
+      if (!isChatMessage(data)) return;                // <— ignora eventos não-mensagem
 
       const raw = data?.message ?? data;
       const msg = normalizeMsg(raw);
 
-      // ignore mensagens de outros tickets
-      if (String(msg.ticketId) !== String(ticket?.id)) return;
+      if (String(msg.ticketId) !== String(ticket?.id)) return; // ignora de outro ticket
 
       dispatch({
         type: data?.action === "update" ? "UPDATE_MESSAGE" : "ADD_MESSAGE",

@@ -20,6 +20,7 @@ import CheckContactNumber from "../services/WbotServices/CheckNumber";
 import CheckIsValidContact from "../services/WbotServices/CheckIsValidContact";
 import GetProfilePicUrl from "../services/WbotServices/GetProfilePicUrl";
 import CreateOrUpdateContactService from "../services/ContactServices/CreateOrUpdateContactService";
+import CreateMessageService from "../services/MessageServices/CreateMessageService";
 
 type IndexQuery = { pageNumber: string };
 
@@ -30,6 +31,14 @@ type MessageData = {
   quotedMsg?: Message;
   number?: string;
   closeTicket?: true;
+};
+
+const inferMediaType = (mimetype?: string | null): string | null => {
+  if (!mimetype) return "document";
+  if (mimetype.startsWith("image/")) return "image";
+  if (mimetype.startsWith("video/")) return "video";
+  if (mimetype.startsWith("audio/")) return "audio";
+  return "document";
 };
 
 export const index = async (req: Request, res: Response): Promise<Response> => {
@@ -65,74 +74,31 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
   const ticket = await ShowTicketService(ticketId, companyId);
   SetTicketMessagesAsRead(ticket);
 
-  // ===== agente responsável (fallbacks robustos) =====
-  const fallbackUserId = (req.user as any)?.id;
-  const agentId = (ticket as any)?.userId ?? fallbackUserId;
-  let agentName: string | undefined = (req.user as any)?.name;
-  try {
-    if (ticket && (ticket as any).userId) {
-      const agent = await User.findByPk((ticket as any).userId);
-      if (agent?.name) agentName = agent.name;
-    }
-  } catch {}
-  if (!agentName) agentName = "Atendente";
-
-  const io = getIO();
-  const room = ticket.id.toString();
-  const now = new Date();
-
-  const inferMediaType = (mimetype?: string | null): string | null => {
-    if (!mimetype) return "document";
-    if (mimetype.startsWith("image/")) return "image";
-    if (mimetype.startsWith("video/")) return "video";
-    if (mimetype.startsWith("audio/")) return "audio";
-    return "document";
-  };
-
-  const emitCreate = (msgLike: any) => {
-    io.to(room).emit(`company-${companyId}-appMessage`, {
-      action: "create",
-      message: msgLike
-    });
-  };
-
-  const baseContact =
-    ticket?.contact
-      ? {
-          id: (ticket as any).contactId ?? ticket.contact.id,
-          name: ticket.contact.name,
-          number: (ticket.contact as any).number,
-          profilePicUrl: (ticket.contact as any).profilePicUrl ?? null
-        }
-      : null;
-
-  // ======= MÍDIAS: placeholder(s) + envio =======
+  // ======== MÍDIA: cria registro + envia =========
   if (medias && medias.length) {
+    const createdIds: Array<number | string | undefined> = [];
+
     for (let index = 0; index < medias.length; index++) {
       const media = medias[index];
       const captionIn = Array.isArray(body) ? body[index] : body;
       const renderedCaption = captionIn ? formatBody(captionIn, ticket.contact) : "";
 
-      const tempMsg = {
-        id: `temp-${Date.now()}-${index}`,
-        ticketId: ticket.id,
-        contactId: (ticket as any).contactId ?? ticket.contact?.id ?? null,
-        contact: baseContact,
-        userId: agentId,                     // << essencial para a UI
-        user: { id: agentId, name: agentName },
-        body: renderedCaption || media.originalname,
-        fromMe: true,
-        read: true,
-        ack: 0,
-        mediaType: inferMediaType(media.mimetype),
-        mediaUrl: null,
+      // cria a mensagem local (o service emite o socket "create")
+      const created = await CreateMessageService({
         companyId,
-        createdAt: now,
-        updatedAt: now,
-        isDeleted: false
-      };
-      emitCreate(tempMsg);
+        messageData: {
+          id: undefined as any, // o tipo exige; o modelo gera
+          ticketId: ticket.id,
+          body: renderedCaption || media.originalname,
+          fromMe: true,
+          read: true,
+          mediaType: inferMediaType(media.mimetype),
+          mediaUrl: null
+        }
+      });
+      createdIds.push(created?.id);
 
+      // envia de fato
       await SendWhatsAppMedia({
         media,
         ticket,
@@ -144,36 +110,35 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
       });
     }
 
-    return res.status(200).json({ message: "Mídia(s) enviada(s)" });
+    return res
+      .status(200)
+      .json({ message: "Mídia(s) enviada(s)", createdMessageIds: createdIds });
   }
 
-  // ======= TEXTO: eco imediato + envio =======
+  // ======== TEXTO: cria registro + envia =========
   const renderedBody = formatBody(body, ticket.contact);
 
-  const tempMsg = {
-    id: `temp-${Date.now()}`,
-    ticketId: ticket.id,
-    contactId: (ticket as any).contactId ?? ticket.contact?.id ?? null,
-    contact: baseContact,
-    userId: agentId,
-    user: { id: agentId, name: agentName },
-    body: renderedBody,
-    fromMe: true,
-    read: true,
-    ack: 0,
-    mediaType: null,
-    mediaUrl: null,
+  const createdMessage = await CreateMessageService({
     companyId,
-    createdAt: now,
-    updatedAt: now,
-    isDeleted: false
-  };
-  emitCreate(tempMsg);
+    messageData: {
+      id: undefined as any,
+      ticketId: ticket.id,
+      body: renderedBody,
+      fromMe: true,
+      read: true,
+      mediaType: null,
+      mediaUrl: null
+    }
+  });
 
   await SendWhatsAppMessage({ body: renderedBody, ticket, quotedMsg });
+
   await ticket.update({ lastMessage: renderedBody });
 
-  return res.status(200).json({ message: "Mensagem enviada" });
+  return res.status(200).json({
+    message: "Mensagem enviada",
+    createdMessageId: createdMessage?.id
+  });
 };
 
 export const remove = async (req: Request, res: Response): Promise<Response> => {
