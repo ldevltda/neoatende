@@ -1,3 +1,4 @@
+// teste
 import path, { join } from "path";
 import { promisify } from "util";
 import { readFile, writeFile } from "fs";
