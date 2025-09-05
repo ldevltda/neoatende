@@ -12,8 +12,10 @@ import { CounterManager } from "./counter";
 let io: SocketIO;
 
 function getAllowedOrigins() {
-  const fromEnv = (process.env.FRONTEND_URL || "").split(",").map(s => s.trim()).filter(Boolean);
-  // Em dev, permita localhost
+  const fromEnv = (process.env.FRONTEND_URL || "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean);
   const devOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
   if (process.env.NODE_ENV === "production") return fromEnv.length ? fromEnv : ["*"];
   return [...new Set([...fromEnv, ...devOrigins])];
@@ -21,16 +23,16 @@ function getAllowedOrigins() {
 
 export const initIO = (httpServer: Server): SocketIO => {
   io = new SocketIO(httpServer, {
-    path: "/socket.io",
-    // prioriza websocket (polling fica como fallback para clientes antigos)
-    transports: ["websocket", "polling"],
-    allowEIO3: true,
     cors: {
       origin: getAllowedOrigins(),
       credentials: true,
       methods: ["GET", "POST", "OPTIONS"],
       allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"]
-    }
+    },
+    // SIMPLIFICAÇÃO: WS-only para parar os 400 do polling no Fly
+    transports: ["websocket"],
+    allowUpgrades: false,
+    allowEIO3: true
   });
 
   /**
@@ -46,7 +48,7 @@ export const initIO = (httpServer: Server): SocketIO => {
       const queryToken = socket.handshake.query?.token as string | undefined;
       const headerAuth = socket.handshake.headers?.authorization as string | undefined;
 
-      let rawToken: string | undefined =
+      const rawToken: string | undefined =
         auth.token ||
         queryToken ||
         (headerAuth?.startsWith("Bearer ") ? headerAuth.slice(7) : undefined);
@@ -62,7 +64,6 @@ export const initIO = (httpServer: Server): SocketIO => {
         return next(new Error("unauthorized"));
       }
 
-      // guarda para usar no "connection"
       (socket.data as any).userId = payload.id;
       return next();
     } catch (e: any) {
@@ -81,7 +82,7 @@ export const initIO = (httpServer: Server): SocketIO => {
     if (!userId || userId === "undefined" || userId === "null") {
       logger.info("onConnect: Missing userId");
       socket.disconnect();
-      return io;
+      return;
     }
 
     let user: User | null = null;
@@ -94,12 +95,12 @@ export const initIO = (httpServer: Server): SocketIO => {
     if (!user) {
       logger.info(`onConnect: User ${userId} not found`);
       socket.disconnect();
-      return io;
+      return;
     }
 
     // marca online
     try {
-      user.online = true as any;
+      (user as any).online = true;
       await user.save();
     } catch (e) {
       logger.warn(e, `onConnect: could not set user ${user.id} online`);
@@ -145,7 +146,7 @@ export const initIO = (httpServer: Server): SocketIO => {
             logger.debug(`User ${user!.id} of company ${user!.companyId} joined queue ${queue.id} channel.`);
             socket.join(`queue-${queue.id}-notification`);
           });
-          if (user!.allTicket === "enabled") socket.join("queue-null-notification");
+          if ((user as any).allTicket === "enabled") socket.join("queue-null-notification");
         }
       }
       logger.debug(`joinNotification[${c}]: User: ${user!.id}`);
@@ -161,7 +162,7 @@ export const initIO = (httpServer: Server): SocketIO => {
             logger.debug(`User ${user!.id} of company ${user!.companyId} leaved queue ${queue.id} channel.`);
             socket.leave(`queue-${queue.id}-notification`);
           });
-          if (user!.allTicket === "enabled") socket.leave("queue-null-notification");
+          if ((user as any).allTicket === "enabled") socket.leave("queue-null-notification");
         }
       }
       logger.debug(`leaveNotification[${c}]: User: ${user!.id}`);
@@ -178,7 +179,7 @@ export const initIO = (httpServer: Server): SocketIO => {
             logger.debug(`User ${user!.id} of company ${user!.companyId} joined queue ${queue.id} pending tickets channel.`);
             socket.join(`queue-${queue.id}-pending`);
           });
-          if (user!.allTicket === "enabled") socket.join("queue-null-pending");
+          if ((user as any).allTicket === "enabled") socket.join("queue-null-pending");
         } else {
           logger.debug(`User ${user!.id} cannot subscribe to ${status}`);
         }
@@ -192,11 +193,11 @@ export const initIO = (httpServer: Server): SocketIO => {
           logger.debug(`Admin ${user!.id} of company ${user!.companyId} leaved ${status} tickets channel.`);
           socket.leave(`company-${user!.companyId}-${status}`);
         } else if (status === "pending") {
-          user!.queues.forEach(queue => {
+          user!.queues.forEach((queue) => {
             logger.debug(`User ${user!.id} of company ${user!.companyId} leaved queue ${queue.id} pending tickets channel.`);
             socket.leave(`queue-${queue.id}-pending`);
           });
-          if (user!.allTicket === "enabled") socket.leave("queue-null-pending");
+          if ((user as any).allTicket === "enabled") socket.leave("queue-null-pending");
         }
       }
     });
