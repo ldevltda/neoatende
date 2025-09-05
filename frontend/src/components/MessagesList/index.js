@@ -372,21 +372,38 @@ const MessagesList = ({ ticket, ticketId, isGroup }) => {
     const companyId = localStorage.getItem("companyId");
     const socket = socketManager.getSocket(companyId);
 
-    socket.on("ready", () => socket.emit("joinChatBox", `${ticket.id}`));
+    const room = `${ticket?.id}`;
 
-    socket.on(`company-${companyId}-appMessage`, (data) => {
-      if (data.action === "create" && data.message.ticketId === currentTicketId.current) {
+    const join = () => {
+      if (room) socket.emit("joinChatBox", room);
+    };
+
+    // entra já; o ManagedSocket reexecuta joins quando o "ready" dispara
+    join();
+
+    const onAppMessage = (data) => {
+      if (data.message?.ticketId !== currentTicketId.current) return;
+
+      if (data.action === "create") {
         dispatch({ type: "ADD_MESSAGE", payload: data.message });
         scrollToBottom();
-      }
-
-      if (data.action === "update" && data.message.ticketId === currentTicketId.current) {
+      } else if (data.action === "update") {
         dispatch({ type: "UPDATE_MESSAGE", payload: data.message });
       }
-    });
+    };
+
+    // ouvir o canal da companhia
+    socket.on(`company-${companyId}-appMessage`, onAppMessage);
+
+    // ao “ready” (reconexão), rejoin garantido
+    socket.on("ready", join);
 
     return () => {
-      socket.disconnect();
+      // sai do room e limpa os listeners — mas NÃO derruba o socket global
+      if (room) socket.emit("leaveChatBox", room);
+      socket.off(`company-${companyId}-appMessage`, onAppMessage);
+      socket.off("ready", join);
+      // importante: não use socket.disconnect() aqui
     };
   }, [ticketId, ticket, socketManager]);
 

@@ -20,6 +20,7 @@ import CheckContactNumber from "../services/WbotServices/CheckNumber";
 import CheckIsValidContact from "../services/WbotServices/CheckIsValidContact";
 import GetProfilePicUrl from "../services/WbotServices/GetProfilePicUrl";
 import CreateOrUpdateContactService from "../services/ContactServices/CreateOrUpdateContactService";
+
 type IndexQuery = {
   pageNumber: string;
 };
@@ -67,20 +68,95 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
   const { companyId } = req.user;
 
   const ticket = await ShowTicketService(ticketId, companyId);
-
   SetTicketMessagesAsRead(ticket);
 
-  if (medias) {
-    await Promise.all(
-      medias.map(async (media: Express.Multer.File, index) => {
-        await SendWhatsAppMedia({ media, ticket, body: Array.isArray(body) ? body[index] : body });
-      })
-    );
-  } else {
-    const send = await SendWhatsAppMessage({ body, ticket, quotedMsg });
+  const io = getIO();
+  const room = ticket.id.toString();
+  const now = new Date();
+
+  // Inferência simples para o placeholder de mídia
+  const inferMediaType = (mimetype?: string | null): string | null => {
+    if (!mimetype) return "document";
+    if (mimetype.startsWith("image/")) return "image";
+    if (mimetype.startsWith("video/")) return "video";
+    if (mimetype.startsWith("audio/")) return "audio";
+    return "document";
+  };
+
+  // Emite um evento "create" sintético para a UI
+  const emitCreate = (msgLike: any) => {
+    io.to(room).emit(`company-${companyId}-appMessage`, {
+      action: "create",
+      message: msgLike
+    });
+  };
+
+  // === MÍDIAS: cria placeholder(s) e envia ===
+  if (medias && medias.length) {
+    for (let index = 0; index < medias.length; index++) {
+      const media = medias[index];
+      const captionIn = Array.isArray(body) ? body[index] : body;
+      const renderedCaption = captionIn ? formatBody(captionIn, ticket.contact) : "";
+
+      // 1) placeholder local (não grava em banco; apenas exibe na UI)
+      const tempMsg = {
+        id: `temp-${Date.now()}-${index}`, // id temporário
+        ticketId: ticket.id,
+        contactId: (ticket as any).contactId ?? ticket.contact?.id ?? null,
+        body: renderedCaption || media.originalname,
+        fromMe: true,
+        read: true,
+        ack: 0,
+        mediaType: inferMediaType(media.mimetype), // image | video | audio | document
+        mediaUrl: null,
+        companyId,
+        createdAt: now,
+        updatedAt: now
+      };
+      emitCreate(tempMsg);
+
+      // 2) envio real da mídia
+      await SendWhatsAppMedia({
+        media,
+        ticket,
+        body: renderedCaption || undefined
+      });
+
+      // 3) atualiza lastMessage
+      await ticket.update({
+        lastMessage: renderedCaption || media.originalname
+      });
+    }
+
+    return res.status(200).json({ message: "Mídia(s) enviada(s)" });
   }
 
-  return res.send();
+  // === TEXTO: eco imediato + envio real ===
+  const renderedBody = formatBody(body, ticket.contact);
+
+  // placeholder para a UI (sem persistir)
+  const tempMsg = {
+    id: `temp-${Date.now()}`,
+    ticketId: ticket.id,
+    contactId: (ticket as any).contactId ?? ticket.contact?.id ?? null,
+    body: renderedBody,
+    fromMe: true,
+    read: true,
+    ack: 0,
+    mediaType: null,
+    mediaUrl: null,
+    companyId,
+    createdAt: now,
+    updatedAt: now
+  };
+  emitCreate(tempMsg);
+
+  // envio real (mantém quotedMsg se houver)
+  await SendWhatsAppMessage({ body: renderedBody, ticket, quotedMsg });
+
+  await ticket.update({ lastMessage: renderedBody });
+
+  return res.status(200).json({ message: "Mensagem enviada" });
 };
 
 export const remove = async (
@@ -124,10 +200,7 @@ export const send = async (req: Request, res: Response): Promise<Response> => {
 
     const CheckValidNumber = await CheckContactNumber(numberToTest, companyId);
     const number = CheckValidNumber.jid.replace(/\D/g, "");
-    const profilePicUrl = await GetProfilePicUrl(
-      number,
-      companyId
-    );
+    const profilePicUrl = await GetProfilePicUrl(number, companyId);
     const contactData = {
       name: `${number}`,
       number,
@@ -138,9 +211,14 @@ export const send = async (req: Request, res: Response): Promise<Response> => {
 
     const contact = await CreateOrUpdateContactService(contactData);
 
-    const ticket = await FindOrCreateTicketService(contact, whatsapp.id!, 0, companyId);
+    const ticket = await FindOrCreateTicketService(
+      contact,
+      whatsapp.id!,
+      0,
+      companyId
+    );
 
-    if (medias) {
+    if (medias && medias.length) {
       await Promise.all(
         medias.map(async (media: Express.Multer.File) => {
           await req.app.get("queues").messageQueue.add(
@@ -159,12 +237,9 @@ export const send = async (req: Request, res: Response): Promise<Response> => {
         })
       );
     } else {
-      await SendWhatsAppMessage({ body: formatBody(body, contact), ticket });
-
-      await ticket.update({
-        lastMessage: body,
-      });
-
+      const rendered = formatBody(body, contact);
+      await SendWhatsAppMessage({ body: rendered, ticket });
+      await ticket.update({ lastMessage: rendered });
     }
 
     if (messageData.closeTicket) {
@@ -196,7 +271,7 @@ export const sendMessageFlow = async (
   body: any,
   req: Request,
   files?: Express.Multer.File[]
-): Promise<String> => {
+): Promise<string> => {
   const messageData = body;
   const medias = files;
 
@@ -212,14 +287,14 @@ export const sendMessageFlow = async (
     }
 
     const numberToTest = messageData.number;
-    const body = messageData.body;
+    const text = messageData.body;
 
     const companyId = messageData.companyId;
 
-    const CheckValidNumber = await CheckContactNumber(numberToTest, companyId);
+    await CheckContactNumber(numberToTest, companyId);
     const number = numberToTest.replace(/\D/g, "");
 
-    if (medias) {
+    if (medias && medias.length) {
       await Promise.all(
         medias.map(async (media: Express.Multer.File) => {
           await req.app.get("queues").messageQueue.add(
@@ -237,16 +312,15 @@ export const sendMessageFlow = async (
         })
       );
     } else {
-      req.app.get("queues").messageQueue.add(
+      await req.app.get("queues").messageQueue.add(
         "SendMessage",
         {
           whatsappId,
           data: {
             number,
-            body
+            body: text
           }
         },
-
         { removeOnComplete: false, attempts: 3 }
       );
     }
