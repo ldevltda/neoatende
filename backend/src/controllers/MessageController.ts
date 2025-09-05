@@ -65,7 +65,7 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
   const { ticketId } = req.params;
   const { body, quotedMsg }: MessageData = req.body;
   const medias = req.files as Express.Multer.File[];
-  const { companyId } = req.user;
+  const { companyId, id: userId } = req.user as any; // <- vamos usar no placeholder
 
   const ticket = await ShowTicketService(ticketId, companyId);
   SetTicketMessagesAsRead(ticket);
@@ -74,16 +74,14 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
   const room = ticket.id.toString();
   const now = new Date();
 
-  // Inferência simples para o placeholder de mídia
   const inferMediaType = (mimetype?: string | null): string | null => {
     if (!mimetype) return "document";
     if (mimetype.startsWith("image/")) return "image";
     if (mimetype.startsWith("video/")) return "video";
     if (mimetype.startsWith("audio/")) return "audio";
     return "document";
-  };
+    };
 
-  // Emite um evento "create" sintético para a UI
   const emitCreate = (msgLike: any) => {
     io.to(room).emit(`company-${companyId}-appMessage`, {
       action: "create",
@@ -91,23 +89,23 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
     });
   };
 
-  // === MÍDIAS: cria placeholder(s) e envia ===
+  // === MÍDIAS: placeholder(s) + envio ===
   if (medias && medias.length) {
     for (let index = 0; index < medias.length; index++) {
       const media = medias[index];
       const captionIn = Array.isArray(body) ? body[index] : body;
       const renderedCaption = captionIn ? formatBody(captionIn, ticket.contact) : "";
 
-      // 1) placeholder local (não grava em banco; apenas exibe na UI)
       const tempMsg = {
-        id: `temp-${Date.now()}-${index}`, // id temporário
+        id: `temp-${Date.now()}-${index}`,
         ticketId: ticket.id,
         contactId: (ticket as any).contactId ?? ticket.contact?.id ?? null,
+        userId,               // <- adicionado
         body: renderedCaption || media.originalname,
         fromMe: true,
         read: true,
         ack: 0,
-        mediaType: inferMediaType(media.mimetype), // image | video | audio | document
+        mediaType: inferMediaType(media.mimetype),
         mediaUrl: null,
         companyId,
         createdAt: now,
@@ -115,14 +113,12 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
       };
       emitCreate(tempMsg);
 
-      // 2) envio real da mídia
       await SendWhatsAppMedia({
         media,
         ticket,
         body: renderedCaption || undefined
       });
 
-      // 3) atualiza lastMessage
       await ticket.update({
         lastMessage: renderedCaption || media.originalname
       });
@@ -134,11 +130,11 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
   // === TEXTO: eco imediato + envio real ===
   const renderedBody = formatBody(body, ticket.contact);
 
-  // placeholder para a UI (sem persistir)
   const tempMsg = {
     id: `temp-${Date.now()}`,
     ticketId: ticket.id,
     contactId: (ticket as any).contactId ?? ticket.contact?.id ?? null,
+    userId,                 // <- adicionado
     body: renderedBody,
     fromMe: true,
     read: true,
@@ -151,7 +147,6 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
   };
   emitCreate(tempMsg);
 
-  // envio real (mantém quotedMsg se houver)
   await SendWhatsAppMessage({ body: renderedBody, ticket, quotedMsg });
 
   await ticket.update({ lastMessage: renderedBody });
