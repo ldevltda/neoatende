@@ -60,10 +60,22 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
   const { ticketId } = req.params;
   const { body, quotedMsg }: MessageData = req.body;
   const medias = req.files as Express.Multer.File[];
-  const { companyId, id: userId, name: userName } = req.user as any;
+  const { companyId } = req.user as any;
 
   const ticket = await ShowTicketService(ticketId, companyId);
   SetTicketMessagesAsRead(ticket);
+
+  // ===== agente responsável (fallbacks robustos) =====
+  const fallbackUserId = (req.user as any)?.id;
+  const agentId = (ticket as any)?.userId ?? fallbackUserId;
+  let agentName: string | undefined = (req.user as any)?.name;
+  try {
+    if (ticket && (ticket as any).userId) {
+      const agent = await User.findByPk((ticket as any).userId);
+      if (agent?.name) agentName = agent.name;
+    }
+  } catch {}
+  if (!agentName) agentName = "Atendente";
 
   const io = getIO();
   const room = ticket.id.toString();
@@ -105,9 +117,9 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
         id: `temp-${Date.now()}-${index}`,
         ticketId: ticket.id,
         contactId: (ticket as any).contactId ?? ticket.contact?.id ?? null,
-        contact: baseContact,                // <- ajuda componentes que leem message.contact
-        userId,                              // <- requerido pela UI
-        user: { id: userId, name: userName },// <- alguns componentes usam message.user.id
+        contact: baseContact,
+        userId: agentId,                     // << essencial para a UI
+        user: { id: agentId, name: agentName },
         body: renderedCaption || media.originalname,
         fromMe: true,
         read: true,
@@ -143,8 +155,8 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
     ticketId: ticket.id,
     contactId: (ticket as any).contactId ?? ticket.contact?.id ?? null,
     contact: baseContact,
-    userId,
-    user: { id: userId, name: userName },
+    userId: agentId,
+    user: { id: agentId, name: agentName },
     body: renderedBody,
     fromMe: true,
     read: true,
@@ -197,13 +209,7 @@ export const send = async (req: Request, res: Response): Promise<Response> => {
     const CheckValidNumber = await CheckContactNumber(numberToTest, companyId);
     const number = CheckValidNumber.jid.replace(/\D/g, "");
     const profilePicUrl = await GetProfilePicUrl(number, companyId);
-    const contactData = {
-      name: `${number}`,
-      number,
-      profilePicUrl,
-      isGroup: false,
-      companyId
-    };
+    const contactData = { name: `${number}`, number, profilePicUrl, isGroup: false, companyId };
 
     const contact = await CreateOrUpdateContactService(contactData);
     const ticket = await FindOrCreateTicketService(contact, whatsapp.id!, 0, companyId);
@@ -280,10 +286,7 @@ export const sendMessageFlow = async (
         medias.map(async (media: Express.Multer.File) => {
           await req.app.get("queues").messageQueue.add(
             "SendMessage",
-            {
-              whatsappId,
-              data: { number, body: media.originalname, mediaPath: media.path }
-            },
+            { whatsappId, data: { number, body: media.originalname, mediaPath: media.path } },
             { removeOnComplete: true, attempts: 3 }
           );
         })
