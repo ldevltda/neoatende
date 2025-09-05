@@ -115,12 +115,24 @@ const SocketManager = {
         return new DummySocket();
       }
       
-      this.currentSocket = openSocket(process.env.REACT_APP_BACKEND_URL, {
-        transports: ["polling"],
-        pingTimeout: 18000,
-        pingInterval: 18000,
-        query: { token },
-      });
+      this.currentSocket = openSocket(
+        process.env.REACT_APP_BACKEND_URL || window.location.origin,
+        {
+          // força WS direto (sem fallback de polling)
+          transports: ["websocket"],
+          upgrade: false,
+          withCredentials: true,
+
+          // mantém seus tempos
+          pingTimeout: 18000,
+          pingInterval: 18000,
+
+          // mantém a forma como você já envia o token (query)
+          query: { token }
+          // (opcional futuramente: usar auth: { token })
+        }
+      );
+
       
       this.currentSocket.on("disconnect", (reason) => {
         console.warn(`socket disconnected because: ${reason}`);
