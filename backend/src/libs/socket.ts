@@ -21,15 +21,16 @@ function getAllowedOrigins() {
 
 export const initIO = (httpServer: Server): SocketIO => {
   io = new SocketIO(httpServer, {
+    path: "/socket.io",
+    // prioriza websocket (polling fica como fallback para clientes antigos)
+    transports: ["websocket", "polling"],
+    allowEIO3: true,
     cors: {
-      origin: "*",
+      origin: getAllowedOrigins(),
       credentials: true,
       methods: ["GET", "POST", "OPTIONS"],
       allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"]
-    },
-    transports: ["websocket"],   // foca só em WebSocket
-    allowUpgrades: false,         // não tenta “subir” de polling -> ws
-    allowEIO3: true               // mantém compatibilidade com seu cliente atual
+    }
   });
 
   /**
