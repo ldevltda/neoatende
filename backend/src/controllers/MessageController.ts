@@ -21,9 +21,7 @@ import CheckIsValidContact from "../services/WbotServices/CheckIsValidContact";
 import GetProfilePicUrl from "../services/WbotServices/GetProfilePicUrl";
 import CreateOrUpdateContactService from "../services/ContactServices/CreateOrUpdateContactService";
 
-type IndexQuery = {
-  pageNumber: string;
-};
+type IndexQuery = { pageNumber: string };
 
 type MessageData = {
   body: string;
@@ -44,9 +42,7 @@ export const index = async (req: Request, res: Response): Promise<Response> => {
     const user = await User.findByPk(req.user.id, {
       include: [{ model: Queue, as: "queues" }]
     });
-    user.queues.forEach(queue => {
-      queues.push(queue.id);
-    });
+    user.queues.forEach(q => queues.push(q.id));
   }
 
   const { count, messages, ticket, hasMore } = await ListMessagesService({
@@ -57,7 +53,6 @@ export const index = async (req: Request, res: Response): Promise<Response> => {
   });
 
   SetTicketMessagesAsRead(ticket);
-
   return res.json({ count, messages, ticket, hasMore });
 };
 
@@ -65,7 +60,7 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
   const { ticketId } = req.params;
   const { body, quotedMsg }: MessageData = req.body;
   const medias = req.files as Express.Multer.File[];
-  const { companyId, id: userId } = req.user as any; // <- vamos usar no placeholder
+  const { companyId, id: userId, name: userName } = req.user as any;
 
   const ticket = await ShowTicketService(ticketId, companyId);
   SetTicketMessagesAsRead(ticket);
@@ -80,7 +75,7 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
     if (mimetype.startsWith("video/")) return "video";
     if (mimetype.startsWith("audio/")) return "audio";
     return "document";
-    };
+  };
 
   const emitCreate = (msgLike: any) => {
     io.to(room).emit(`company-${companyId}-appMessage`, {
@@ -89,7 +84,17 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
     });
   };
 
-  // === MÍDIAS: placeholder(s) + envio ===
+  const baseContact =
+    ticket?.contact
+      ? {
+          id: (ticket as any).contactId ?? ticket.contact.id,
+          name: ticket.contact.name,
+          number: (ticket.contact as any).number,
+          profilePicUrl: (ticket.contact as any).profilePicUrl ?? null
+        }
+      : null;
+
+  // ======= MÍDIAS: placeholder(s) + envio =======
   if (medias && medias.length) {
     for (let index = 0; index < medias.length; index++) {
       const media = medias[index];
@@ -100,7 +105,9 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
         id: `temp-${Date.now()}-${index}`,
         ticketId: ticket.id,
         contactId: (ticket as any).contactId ?? ticket.contact?.id ?? null,
-        userId,               // <- adicionado
+        contact: baseContact,                // <- ajuda componentes que leem message.contact
+        userId,                              // <- requerido pela UI
+        user: { id: userId, name: userName },// <- alguns componentes usam message.user.id
         body: renderedCaption || media.originalname,
         fromMe: true,
         read: true,
@@ -109,7 +116,8 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
         mediaUrl: null,
         companyId,
         createdAt: now,
-        updatedAt: now
+        updatedAt: now,
+        isDeleted: false
       };
       emitCreate(tempMsg);
 
@@ -127,14 +135,16 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
     return res.status(200).json({ message: "Mídia(s) enviada(s)" });
   }
 
-  // === TEXTO: eco imediato + envio real ===
+  // ======= TEXTO: eco imediato + envio =======
   const renderedBody = formatBody(body, ticket.contact);
 
   const tempMsg = {
     id: `temp-${Date.now()}`,
     ticketId: ticket.id,
     contactId: (ticket as any).contactId ?? ticket.contact?.id ?? null,
-    userId,                 // <- adicionado
+    contact: baseContact,
+    userId,
+    user: { id: userId, name: userName },
     body: renderedBody,
     fromMe: true,
     read: true,
@@ -143,21 +153,18 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
     mediaUrl: null,
     companyId,
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
+    isDeleted: false
   };
   emitCreate(tempMsg);
 
   await SendWhatsAppMessage({ body: renderedBody, ticket, quotedMsg });
-
   await ticket.update({ lastMessage: renderedBody });
 
   return res.status(200).json({ message: "Mensagem enviada" });
 };
 
-export const remove = async (
-  req: Request,
-  res: Response
-): Promise<Response> => {
+export const remove = async (req: Request, res: Response): Promise<Response> => {
   const { messageId } = req.params;
   const { companyId } = req.user;
 
@@ -179,18 +186,12 @@ export const send = async (req: Request, res: Response): Promise<Response> => {
 
   try {
     const whatsapp = await Whatsapp.findByPk(whatsappId);
+    if (!whatsapp) throw new Error("Não foi possível realizar a operação");
 
-    if (!whatsapp) {
-      throw new Error("Não foi possível realizar a operação");
-    }
-
-    if (messageData.number === undefined) {
-      throw new Error("O número é obrigatório");
-    }
+    if (messageData.number === undefined) throw new Error("O número é obrigatório");
 
     const numberToTest = messageData.number;
     const body = messageData.body;
-
     const companyId = whatsapp.companyId;
 
     const CheckValidNumber = await CheckContactNumber(numberToTest, companyId);
@@ -205,13 +206,7 @@ export const send = async (req: Request, res: Response): Promise<Response> => {
     };
 
     const contact = await CreateOrUpdateContactService(contactData);
-
-    const ticket = await FindOrCreateTicketService(
-      contact,
-      whatsapp.id!,
-      0,
-      companyId
-    );
+    const ticket = await FindOrCreateTicketService(contact, whatsapp.id!, 0, companyId);
 
     if (medias && medias.length) {
       await Promise.all(
@@ -248,13 +243,10 @@ export const send = async (req: Request, res: Response): Promise<Response> => {
     }
 
     SetTicketMessagesAsRead(ticket);
-
     return res.send({ mensagem: "Mensagem enviada" });
   } catch (err: any) {
     if (Object.keys(err).length === 0) {
-      throw new AppError(
-        "Não foi possível enviar a mensagem, tente novamente em alguns instantes"
-      );
+      throw new AppError("Não foi possível enviar a mensagem, tente novamente em alguns instantes");
     } else {
       throw new AppError(err.message);
     }
@@ -272,18 +264,12 @@ export const sendMessageFlow = async (
 
   try {
     const whatsapp = await Whatsapp.findByPk(whatsappId);
+    if (!whatsapp) throw new Error("Não foi possível realizar a operação");
 
-    if (!whatsapp) {
-      throw new Error("Não foi possível realizar a operação");
-    }
-
-    if (messageData.number === undefined) {
-      throw new Error("O número é obrigatório");
-    }
+    if (messageData.number === undefined) throw new Error("O número é obrigatório");
 
     const numberToTest = messageData.number;
     const text = messageData.body;
-
     const companyId = messageData.companyId;
 
     await CheckContactNumber(numberToTest, companyId);
@@ -296,11 +282,7 @@ export const sendMessageFlow = async (
             "SendMessage",
             {
               whatsappId,
-              data: {
-                number,
-                body: media.originalname,
-                mediaPath: media.path
-              }
+              data: { number, body: media.originalname, mediaPath: media.path }
             },
             { removeOnComplete: true, attempts: 3 }
           );
@@ -309,13 +291,7 @@ export const sendMessageFlow = async (
     } else {
       await req.app.get("queues").messageQueue.add(
         "SendMessage",
-        {
-          whatsappId,
-          data: {
-            number,
-            body: text
-          }
-        },
+        { whatsappId, data: { number, body: text } },
         { removeOnComplete: false, attempts: 3 }
       );
     }
@@ -323,9 +299,7 @@ export const sendMessageFlow = async (
     return "Mensagem enviada";
   } catch (err: any) {
     if (Object.keys(err).length === 0) {
-      throw new AppError(
-        "Não foi possível enviar a mensagem, tente novamente em alguns instantes"
-      );
+      throw new AppError("Não foi possível enviar a mensagem, tente novamente em alguns instantes");
     } else {
       throw new AppError(err.message);
     }
