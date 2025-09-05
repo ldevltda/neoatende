@@ -2,13 +2,23 @@
   "compilerOptions": {
     "target": "es2020",
     "module": "commonjs",
+    "moduleResolution": "node",
+    "lib": ["ES2020"],
+    "types": ["node"],
+    "typeRoots": ["./node_modules/@types"],
+    "rootDir": "./src",
     "outDir": "./dist",
+
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+
     "strict": false,
     "strictPropertyInitialization": false,
-    "esModuleInterop": true,
-    "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
-  }
+    "forceConsistentCasingInFileNames": true,
+
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true
+  },
+  "include": ["src"]
 }

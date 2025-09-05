@@ -481,7 +481,7 @@ const getContactMessage = async (msg: proto.IWebMessageInfo, wbot: Session) => {
 };
 
 const downloadMedia = async (msg: proto.IWebMessageInfo) => {
-  let buffer;
+ let buffer: Buffer;
   try {
     buffer = await downloadMediaMessage(msg, "buffer", {});
   } catch (err) {
@@ -512,13 +512,12 @@ const downloadMedia = async (msg: proto.IWebMessageInfo) => {
     filename = `${new Date().getTime()}_${filename}`;
   }
 
-  const media = {
+  return {
     data: buffer,
     mimetype: mineType.mimetype,
     filename
   };
 
-  return media;
 };
 
 const verifyContact = async (
@@ -893,7 +892,7 @@ export const verifyMediaMessage = async (
   try {
     await writeFileAsync(
       join(__dirname, "..", "..", "..", "public", media.filename),
-      Buffer.from(media.data, 'base64')
+      media.data as NodeJS.ArrayBufferView
     );
   } catch (err) {
     Sentry.captureException(err);

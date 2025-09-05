@@ -10,16 +10,13 @@
     "dev": "ts-node-dev --respawn --transpile-only --ignore node_modules src/server.ts",
     "start": "node dist/server.js",
     "start:dev": "nodemon dist/server.js",
-
     "db:migrate": "sequelize db:migrate --url \"$DATABASE_URL\" --migrations-path dist/database/migrations",
     "db:migrate:undo": "sequelize db:migrate:undo --url \"$DATABASE_URL\" --migrations-path dist/database/migrations",
     "db:seed": "sequelize db:seed:all --url \"$DATABASE_URL\" --seeders-path dist/database/seeders",
     "db:seed:undo": "sequelize db:seed:undo:all --url \"$DATABASE_URL\" --seeders-path dist/database/seeders",
-
     "pretest": "NODE_ENV=test sequelize db:migrate --url \"$DATABASE_URL_TEST\" --migrations-path dist/database/migrations && NODE_ENV=test sequelize db:seed:all --url \"$DATABASE_URL_TEST\" --seeders-path dist/database/seeders",
     "test": "NODE_ENV=test jest",
     "posttest": "NODE_ENV=test sequelize db:migrate:undo:all --url \"$DATABASE_URL_TEST\" --migrations-path dist/database/migrations",
-
     "lint": "eslint \"src/**/*.ts\""
   },
   "author": "",
@@ -82,7 +79,7 @@
     "@types/jest": "^27.4.1",
     "@types/jsonwebtoken": "^8.5.8",
     "@types/mustache": "^4.1.2",
-    "@types/node": "^17.0.21",
+    "@types/node": "^17.0.45",
     "@types/supertest": "^2.0.11",
     "@types/uuid": "^8.3.4",
     "@types/validator": "^13.7.1",
