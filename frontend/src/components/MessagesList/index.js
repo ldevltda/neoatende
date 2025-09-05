@@ -372,40 +372,83 @@ const MessagesList = ({ ticket, ticketId, isGroup }) => {
     const companyId = localStorage.getItem("companyId");
     const socket = socketManager.getSocket(companyId);
 
-    const room = `${ticket?.id}`;
+    // pega usuário logado para fallbacks
+    let loggedUser = {};
+    try { loggedUser = JSON.parse(localStorage.getItem("user") || "{}"); } catch {}
 
-    const join = () => {
-      if (room) socket.emit("joinChatBox", room);
+    const room = String(ticket?.id || "");
+
+    const join = () => { if (room) socket.emit("joinChatBox", room); };
+
+    // checa se o payload realmente é uma mensagem
+    const isMessagePayload = (data) => {
+      const m = data?.message ?? data;
+      if (!m || typeof m !== "object") return false;
+      // requisitos mínimos para tratarmos como mensagem
+      return (
+        (m.ticketId != null || m.id != null) &&
+        (typeof m.fromMe === "boolean" || m.body != null || m.mediaType != null)
+      );
     };
 
-    // entra já; o ManagedSocket reexecuta joins quando o "ready" dispara
-    join();
+    // normaliza msg pro shape esperado pela UI
+    const normalizeMsg = (raw) => {
+      const msg = {
+        ack: 0,
+        fromMe: typeof raw.fromMe === "boolean" ? raw.fromMe : true,
+        mediaType: raw.mediaType ?? null,
+        mediaUrl: raw.mediaUrl ?? null,
+        isDeleted: raw.isDeleted ?? false,
+        ...raw
+      };
+
+      // garantir contact
+      if (!msg.contact && ticket?.contact) {
+        msg.contact = {
+          id: ticket.contact.id,
+          name: ticket.contact.name,
+          number: ticket.contact.number,
+          profilePicUrl: ticket.contact.profilePicUrl || null
+        };
+      }
+
+      // garantir userId/user
+      if (msg.userId == null) msg.userId = (msg.user && msg.user.id) ?? loggedUser.id ?? 0;
+      if (!msg.user) msg.user = { id: msg.userId, name: loggedUser.name || "Atendente" };
+      else if (!msg.user.id) msg.user.id = msg.userId;
+
+      // coerência do fromMe
+      if (typeof raw.fromMe !== "boolean") msg.fromMe = msg.userId === loggedUser.id;
+
+      return msg;
+    };
 
     const onAppMessage = (data) => {
-      if (data.message?.ticketId !== currentTicketId.current) return;
+      // admin recebe eventos que não são mensagens -> ignorar
+      if (!isMessagePayload(data)) return;
 
-      if (data.action === "create") {
-        dispatch({ type: "ADD_MESSAGE", payload: data.message });
-        scrollToBottom();
-      } else if (data.action === "update") {
-        dispatch({ type: "UPDATE_MESSAGE", payload: data.message });
-      }
+      const raw = data?.message ?? data;
+      const msg = normalizeMsg(raw);
+
+      // ignore mensagens de outros tickets
+      if (String(msg.ticketId) !== String(ticket?.id)) return;
+
+      dispatch({
+        type: data?.action === "update" ? "UPDATE_MESSAGE" : "ADD_MESSAGE",
+        payload: msg
+      });
     };
 
-    // ouvir o canal da companhia
+    join();
     socket.on(`company-${companyId}-appMessage`, onAppMessage);
-
-    // ao “ready” (reconexão), rejoin garantido
     socket.on("ready", join);
 
     return () => {
-      // sai do room e limpa os listeners — mas NÃO derruba o socket global
       if (room) socket.emit("leaveChatBox", room);
       socket.off(`company-${companyId}-appMessage`, onAppMessage);
       socket.off("ready", join);
-      // importante: não use socket.disconnect() aqui
     };
-  }, [ticketId, ticket, socketManager]);
+  }, [ticket?.id, socketManager]);
 
   const loadMore = () => {
     setPageNumber((prevPageNumber) => prevPageNumber + 1);
