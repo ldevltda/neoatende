@@ -372,78 +372,23 @@ const MessagesList = ({ ticket, ticketId, isGroup }) => {
     const companyId = localStorage.getItem("companyId");
     const socket = socketManager.getSocket(companyId);
 
-    // Usuário logado (fallbacks)
-    let loggedUser = {};
-    try { loggedUser = JSON.parse(localStorage.getItem("user") || "{}"); } catch {}
+    socket.on("ready", () => socket.emit("joinChatBox", `${ticket.id}`));
 
-    const room = String(ticket?.id || "");
-    const join = () => { if (room) socket.emit("joinChatBox", room); };
-
-    const isChatMessage = (data) => {
-      const m = data?.message ?? data;
-      if (!m || typeof m !== "object") return false;
-      // requisitos mínimos para tratar como mensagem de chat
-      return (
-        m.ticketId != null &&
-        (m.body != null || m.mediaType != null || typeof m.fromMe === "boolean")
-      );
-    };
-
-    const normalizeMsg = (raw) => {
-      const msg = {
-        ack: 0,
-        fromMe: typeof raw.fromMe === "boolean" ? raw.fromMe : true,
-        mediaType: raw.mediaType ?? null,
-        mediaUrl: raw.mediaUrl ?? null,
-        isDeleted: raw.isDeleted ?? false,
-        ...raw
-      };
-
-      // contact básico (muitos componentes usam)
-      if (!msg.contact && ticket?.contact) {
-        msg.contact = {
-          id: ticket.contact.id,
-          name: ticket.contact.name,
-          number: ticket.contact.number,
-          profilePicUrl: ticket.contact.profilePicUrl || null
-        };
+    socket.on(`company-${companyId}-appMessage`, (data) => {
+      if (data.action === "create" && data.message.ticketId === currentTicketId.current) {
+        dispatch({ type: "ADD_MESSAGE", payload: data.message });
+        scrollToBottom();
       }
 
-      // garantir userId/user SEMPRE
-      if (msg.userId == null) msg.userId = (msg.user && msg.user.id) ?? loggedUser.id ?? 0;
-      if (!msg.user) msg.user = { id: msg.userId, name: loggedUser.name || "Atendente" };
-      else if (!msg.user.id) msg.user.id = msg.userId;
-
-      // coerência do fromMe
-      if (typeof raw.fromMe !== "boolean") msg.fromMe = msg.userId === loggedUser.id;
-
-      return msg;
-    };
-
-    const onAppMessage = (data) => {
-      if (!isChatMessage(data)) return;                // <— ignora eventos não-mensagem
-
-      const raw = data?.message ?? data;
-      const msg = normalizeMsg(raw);
-
-      if (String(msg.ticketId) !== String(ticket?.id)) return; // ignora de outro ticket
-
-      dispatch({
-        type: data?.action === "update" ? "UPDATE_MESSAGE" : "ADD_MESSAGE",
-        payload: msg
-      });
-    };
-
-    join();
-    socket.on(`company-${companyId}-appMessage`, onAppMessage);
-    socket.on("ready", join);
+      if (data.action === "update" && data.message.ticketId === currentTicketId.current) {
+        dispatch({ type: "UPDATE_MESSAGE", payload: data.message });
+      }
+    });
 
     return () => {
-      if (room) socket.emit("leaveChatBox", room);
-      socket.off(`company-${companyId}-appMessage`, onAppMessage);
-      socket.off("ready", join);
+      socket.disconnect();
     };
-  }, [ticket?.id, socketManager]);
+  }, [ticketId, ticket, socketManager]);
 
   const loadMore = () => {
     setPageNumber((prevPageNumber) => prevPageNumber + 1);

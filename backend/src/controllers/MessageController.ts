@@ -20,9 +20,9 @@ import CheckContactNumber from "../services/WbotServices/CheckNumber";
 import CheckIsValidContact from "../services/WbotServices/CheckIsValidContact";
 import GetProfilePicUrl from "../services/WbotServices/GetProfilePicUrl";
 import CreateOrUpdateContactService from "../services/ContactServices/CreateOrUpdateContactService";
-import CreateMessageService from "../services/MessageServices/CreateMessageService";
-
-type IndexQuery = { pageNumber: string };
+type IndexQuery = {
+  pageNumber: string;
+};
 
 type MessageData = {
   body: string;
@@ -31,14 +31,6 @@ type MessageData = {
   quotedMsg?: Message;
   number?: string;
   closeTicket?: true;
-};
-
-const inferMediaType = (mimetype?: string | null): string | null => {
-  if (!mimetype) return "document";
-  if (mimetype.startsWith("image/")) return "image";
-  if (mimetype.startsWith("video/")) return "video";
-  if (mimetype.startsWith("audio/")) return "audio";
-  return "document";
 };
 
 export const index = async (req: Request, res: Response): Promise<Response> => {
@@ -51,7 +43,9 @@ export const index = async (req: Request, res: Response): Promise<Response> => {
     const user = await User.findByPk(req.user.id, {
       include: [{ model: Queue, as: "queues" }]
     });
-    user.queues.forEach(q => queues.push(q.id));
+    user.queues.forEach(queue => {
+      queues.push(queue.id);
+    });
   }
 
   const { count, messages, ticket, hasMore } = await ListMessagesService({
@@ -62,6 +56,7 @@ export const index = async (req: Request, res: Response): Promise<Response> => {
   });
 
   SetTicketMessagesAsRead(ticket);
+
   return res.json({ count, messages, ticket, hasMore });
 };
 
@@ -69,79 +64,29 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
   const { ticketId } = req.params;
   const { body, quotedMsg }: MessageData = req.body;
   const medias = req.files as Express.Multer.File[];
-  const { companyId } = req.user as any;
+  const { companyId } = req.user;
 
   const ticket = await ShowTicketService(ticketId, companyId);
+
   SetTicketMessagesAsRead(ticket);
 
-  // ======== MÍDIA: cria registro + envia =========
-  if (medias && medias.length) {
-    const createdIds: Array<number | string | undefined> = [];
-
-    for (let index = 0; index < medias.length; index++) {
-      const media = medias[index];
-      const captionIn = Array.isArray(body) ? body[index] : body;
-      const renderedCaption = captionIn ? formatBody(captionIn, ticket.contact) : "";
-
-      // cria a mensagem local (o service emite o socket "create")
-      const created = await CreateMessageService({
-        companyId,
-        messageData: {
-          id: undefined as any, // o tipo exige; o modelo gera
-          ticketId: ticket.id,
-          body: renderedCaption || media.originalname,
-          fromMe: true,
-          read: true,
-          mediaType: inferMediaType(media.mimetype),
-          mediaUrl: null
-        }
-      });
-      createdIds.push(created?.id);
-
-      // envia de fato
-      await SendWhatsAppMedia({
-        media,
-        ticket,
-        body: renderedCaption || undefined
-      });
-
-      await ticket.update({
-        lastMessage: renderedCaption || media.originalname
-      });
-    }
-
-    return res
-      .status(200)
-      .json({ message: "Mídia(s) enviada(s)", createdMessageIds: createdIds });
+  if (medias) {
+    await Promise.all(
+      medias.map(async (media: Express.Multer.File, index) => {
+        await SendWhatsAppMedia({ media, ticket, body: Array.isArray(body) ? body[index] : body });
+      })
+    );
+  } else {
+    const send = await SendWhatsAppMessage({ body, ticket, quotedMsg });
   }
 
-  // ======== TEXTO: cria registro + envia =========
-  const renderedBody = formatBody(body, ticket.contact);
-
-  const createdMessage = await CreateMessageService({
-    companyId,
-    messageData: {
-      id: undefined as any,
-      ticketId: ticket.id,
-      body: renderedBody,
-      fromMe: true,
-      read: true,
-      mediaType: null,
-      mediaUrl: null
-    }
-  });
-
-  await SendWhatsAppMessage({ body: renderedBody, ticket, quotedMsg });
-
-  await ticket.update({ lastMessage: renderedBody });
-
-  return res.status(200).json({
-    message: "Mensagem enviada",
-    createdMessageId: createdMessage?.id
-  });
+  return res.send();
 };
 
-export const remove = async (req: Request, res: Response): Promise<Response> => {
+export const remove = async (
+  req: Request,
+  res: Response
+): Promise<Response> => {
   const { messageId } = req.params;
   const { companyId } = req.user;
 
@@ -163,23 +108,39 @@ export const send = async (req: Request, res: Response): Promise<Response> => {
 
   try {
     const whatsapp = await Whatsapp.findByPk(whatsappId);
-    if (!whatsapp) throw new Error("Não foi possível realizar a operação");
 
-    if (messageData.number === undefined) throw new Error("O número é obrigatório");
+    if (!whatsapp) {
+      throw new Error("Não foi possível realizar a operação");
+    }
+
+    if (messageData.number === undefined) {
+      throw new Error("O número é obrigatório");
+    }
 
     const numberToTest = messageData.number;
     const body = messageData.body;
+
     const companyId = whatsapp.companyId;
 
     const CheckValidNumber = await CheckContactNumber(numberToTest, companyId);
     const number = CheckValidNumber.jid.replace(/\D/g, "");
-    const profilePicUrl = await GetProfilePicUrl(number, companyId);
-    const contactData = { name: `${number}`, number, profilePicUrl, isGroup: false, companyId };
+    const profilePicUrl = await GetProfilePicUrl(
+      number,
+      companyId
+    );
+    const contactData = {
+      name: `${number}`,
+      number,
+      profilePicUrl,
+      isGroup: false,
+      companyId
+    };
 
     const contact = await CreateOrUpdateContactService(contactData);
+
     const ticket = await FindOrCreateTicketService(contact, whatsapp.id!, 0, companyId);
 
-    if (medias && medias.length) {
+    if (medias) {
       await Promise.all(
         medias.map(async (media: Express.Multer.File) => {
           await req.app.get("queues").messageQueue.add(
@@ -198,9 +159,12 @@ export const send = async (req: Request, res: Response): Promise<Response> => {
         })
       );
     } else {
-      const rendered = formatBody(body, contact);
-      await SendWhatsAppMessage({ body: rendered, ticket });
-      await ticket.update({ lastMessage: rendered });
+      await SendWhatsAppMessage({ body: formatBody(body, contact), ticket });
+
+      await ticket.update({
+        lastMessage: body,
+      });
+
     }
 
     if (messageData.closeTicket) {
@@ -214,10 +178,13 @@ export const send = async (req: Request, res: Response): Promise<Response> => {
     }
 
     SetTicketMessagesAsRead(ticket);
+
     return res.send({ mensagem: "Mensagem enviada" });
   } catch (err: any) {
     if (Object.keys(err).length === 0) {
-      throw new AppError("Não foi possível enviar a mensagem, tente novamente em alguns instantes");
+      throw new AppError(
+        "Não foi possível enviar a mensagem, tente novamente em alguns instantes"
+      );
     } else {
       throw new AppError(err.message);
     }
@@ -229,37 +196,57 @@ export const sendMessageFlow = async (
   body: any,
   req: Request,
   files?: Express.Multer.File[]
-): Promise<string> => {
+): Promise<String> => {
   const messageData = body;
   const medias = files;
 
   try {
     const whatsapp = await Whatsapp.findByPk(whatsappId);
-    if (!whatsapp) throw new Error("Não foi possível realizar a operação");
 
-    if (messageData.number === undefined) throw new Error("O número é obrigatório");
+    if (!whatsapp) {
+      throw new Error("Não foi possível realizar a operação");
+    }
+
+    if (messageData.number === undefined) {
+      throw new Error("O número é obrigatório");
+    }
 
     const numberToTest = messageData.number;
-    const text = messageData.body;
+    const body = messageData.body;
+
     const companyId = messageData.companyId;
 
-    await CheckContactNumber(numberToTest, companyId);
+    const CheckValidNumber = await CheckContactNumber(numberToTest, companyId);
     const number = numberToTest.replace(/\D/g, "");
 
-    if (medias && medias.length) {
+    if (medias) {
       await Promise.all(
         medias.map(async (media: Express.Multer.File) => {
           await req.app.get("queues").messageQueue.add(
             "SendMessage",
-            { whatsappId, data: { number, body: media.originalname, mediaPath: media.path } },
+            {
+              whatsappId,
+              data: {
+                number,
+                body: media.originalname,
+                mediaPath: media.path
+              }
+            },
             { removeOnComplete: true, attempts: 3 }
           );
         })
       );
     } else {
-      await req.app.get("queues").messageQueue.add(
+      req.app.get("queues").messageQueue.add(
         "SendMessage",
-        { whatsappId, data: { number, body: text } },
+        {
+          whatsappId,
+          data: {
+            number,
+            body
+          }
+        },
+
         { removeOnComplete: false, attempts: 3 }
       );
     }
@@ -267,7 +254,9 @@ export const sendMessageFlow = async (
     return "Mensagem enviada";
   } catch (err: any) {
     if (Object.keys(err).length === 0) {
-      throw new AppError("Não foi possível enviar a mensagem, tente novamente em alguns instantes");
+      throw new AppError(
+        "Não foi possível enviar a mensagem, tente novamente em alguns instantes"
+      );
     } else {
       throw new AppError(err.message);
     }
