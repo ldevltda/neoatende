@@ -1,3 +1,4 @@
+// teste
 import path, { join } from "path";
 import { promisify } from "util";
 import { readFile, writeFile } from "fs";
@@ -481,45 +482,43 @@ const getContactMessage = async (msg: proto.IWebMessageInfo, wbot: Session) => {
 };
 
 const downloadMedia = async (msg: proto.IWebMessageInfo) => {
-  let buffer: Buffer | undefined;
-
+ let buffer: Buffer;
   try {
     buffer = await downloadMediaMessage(msg, "buffer", {});
   } catch (err) {
     console.error("Erro ao baixar mídia:", err);
+
+    // Trate o erro de acordo com as suas necessidades
   }
 
-  // Descobrir “source” do mimetype de forma segura
-  const mediaNode =
+  let filename = msg.message?.documentMessage?.fileName || "";
+
+  const mineType =
     msg.message?.imageMessage ||
     msg.message?.audioMessage ||
     msg.message?.videoMessage ||
     msg.message?.stickerMessage ||
     msg.message?.documentMessage ||
     msg.message?.documentWithCaptionMessage?.message?.documentMessage ||
-    msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage ||
+    msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
+      ?.imageMessage ||
     msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.videoMessage;
 
-  if (!buffer || !mediaNode?.mimetype) {
-    // Falhou: devolve null para o caller tratar sem derrubar o fluxo
-    return null as any;
+  if (!mineType) console.log(msg);
+
+  if (!filename) {
+    const ext = mimeExtension(mineType.mimetype);
+    filename = `${new Date().getTime()}.${ext}`;
+  } else {
+    filename = `${new Date().getTime()}_${filename}`;
   }
-
-  let filename =
-    msg.message?.documentMessage?.fileName ||
-    msg.message?.documentWithCaptionMessage?.message?.documentMessage?.fileName ||
-    "";
-
-  const ext = mimeExtension(mediaNode.mimetype) || "bin";
-  filename = filename
-    ? `${Date.now()}_${filename}`
-    : `${Date.now()}.${ext}`;
 
   return {
     data: buffer,
-    mimetype: mediaNode.mimetype,
+    mimetype: mineType.mimetype,
     filename
   };
+
 };
 
 const verifyContact = async (
@@ -880,7 +879,7 @@ export const verifyMediaMessage = async (
 ): Promise<Message> => {
   const io = getIO();
   const quotedMsg = await verifyQuotedMessage(msg);
-    const media = await downloadMedia(msg);
+  const media = await downloadMedia(msg);
 
   if (!media) {
     throw new Error("ERR_WAPP_DOWNLOAD_MEDIA");
@@ -902,7 +901,7 @@ export const verifyMediaMessage = async (
   }
 
   const body = getBodyMessage(msg);
-  const filename = media?.filename ?? "";
+
   const hasCap = hasCaption(body, media.filename);
   const bodyMessage = body ? hasCap ? formatBody(body, ticket.contact) : "-" : "-";
 
@@ -916,20 +915,12 @@ export const verifyMediaMessage = async (
     mediaUrl: media.filename,
     mediaType: media.mimetype.split("/")[0],
     quotedMsgId: quotedMsg?.id,
-    ack: (msg as any).status ?? 1,
+    ack: msg.status,
     remoteJid: msg.key.remoteJid,
     participant: msg.key.participant,
     dataJson: JSON.stringify(msg),
     ticketTrakingId: ticketTraking?.id,
   };
-
-   if (filename) {
-    // Se o seu Model Message tem `mediaUrl`, mantenha:
-    messageData.mediaUrl = filename;
-
-    // Caso seu Model use outro nome (ex.: mediaName), troque aqui:
-    // messageData.mediaName = filename;
-  }
 
   await ticket.update({
     lastMessage: body || "Arquivo de mídia"
@@ -992,7 +983,7 @@ export const verifyMessage = async (
     mediaType: getTypeMessage(msg),
     read: msg.key.fromMe,
     quotedMsgId: quotedMsg?.id,
-    ack: (msg as any).status ?? 1,
+    ack: msg.status,
     remoteJid: msg.key.remoteJid,
     participant: msg.key.participant,
     dataJson: JSON.stringify(msg),
@@ -2281,8 +2272,7 @@ const handleMessage = async (
       msg.message?.videoMessage ||
       msg.message?.documentMessage ||
       msg.message?.documentWithCaptionMessage ||
-      msg.message?.stickerMessage;
-
+      msg.message.stickerMessage;
     if (msg.key.fromMe) {
       if (/\u200e/.test(bodyMessage)) return;
 
