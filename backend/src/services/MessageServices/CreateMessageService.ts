@@ -1,105 +1,86 @@
-import { getIO } from "../../libs/socket";
+// backend/src/services/MessageServices/CreateMessageService.ts
 import Message from "../../models/Message";
 import Ticket from "../../models/Ticket";
-import Whatsapp from "../../models/Whatsapp";
+import Contact from "../../models/Contact";
+import { getIO } from "../../libs/socket";
 
-export interface MessageData {
-  // chaves mínimas
-  id: string;
-  ticketId: number;
-  body: string;
-
-  // já existentes no seu listener
-  contactId?: number;
-  fromMe?: boolean;
-  read?: boolean;
-  mediaType?: string;
-  mediaUrl?: string;
-  ack?: number;
-
-  // campos adicionais que o listener envia
-  remoteJid?: string | null;
-  participant?: string | null;
-  dataJson?: string | null;
-  isEdited?: boolean;
-  quotedMsgId?: string | number | null;
-  ticketTrakingId?: number | null;
-
-  // opcionalmente o queueId pode vir setado
-  queueId?: number | null;
-}
-
-interface Request {
-  messageData: MessageData;
-  companyId: number;
+interface CreateMessageDTO {
+  messageData: {
+    id: string;
+    ticketId: number;
+    contactId?: number;
+    body: string | null;
+    fromMe: boolean;
+    read: boolean;
+    mediaType?: string | null;
+    mediaUrl?: string | null;      // <== garantimos que existe
+    quotedMsgId?: string | null;
+    ack?: number | null;
+    remoteJid?: string | null;
+    participant?: string | null;
+    dataJson?: string | null;
+    isEdited?: boolean | null;
+    ticketTrakingId?: number | null;
+  };
+  companyId: number;               // <== garantimos que vai para o DB
 }
 
 const CreateMessageService = async ({
   messageData,
   companyId
-}: Request): Promise<Message> => {
-  // faz upsert com todos os campos que chegaram
-  await Message.upsert({ ...messageData, companyId });
-
-  // busca a mensagem enriquecida para emitir via socket
-  const message = await Message.findByPk(messageData.id, {
-    include: [
-      "contact",
-      {
-        model: Ticket,
-        as: "ticket",
-        include: [
-          "contact",
-          "queue",
-          {
-            model: Whatsapp,
-            as: "whatsapp",
-            attributes: ["name"]
-          }
-        ]
-      },
-      {
-        model: Message,
-        as: "quotedMsg",
-        include: ["contact"]
-      }
-    ]
-  });
-
-  if (!message) {
-    throw new Error("ERR_CREATING_MESSAGE");
-  }
-
-  // se a mensagem ainda não tem queueId, herda da queue do ticket
-  if (message.ticket?.queueId != null && message.queueId == null) {
-    await message.update({ queueId: message.ticket.queueId });
-  }
-
+}: CreateMessageDTO) => {
   const io = getIO();
 
-  // rooms podem ser nulos — cuidamos para não passar "undefined"
-  const ticketStatus = message.ticket?.status ?? "pending";
-  const ticketQueueId = message.ticket?.queueId ?? null;
-
-  const emitter = io
-    .to(message.ticketId.toString())
-    .to(`company-${companyId}-${ticketStatus}`)
-    .to(`company-${companyId}-notification`);
-
-  if (ticketQueueId != null) {
-    emitter
-      .to(`queue-${ticketQueueId}-${ticketStatus}`)
-      .to(`queue-${ticketQueueId}-notification`);
-  }
-
-  emitter.emit(`company-${companyId}-appMessage`, {
-    action: "create",
-    message,
-    ticket: message.ticket,
-    contact: message.ticket?.contact
+  // LOGS de diagnóstico (remova depois)
+  console.log("[CreateMessageService] about to insert", {
+    ...messageData,
+    companyId
   });
 
-  return message;
+  try {
+    // Campos obrigatórios que costumam causar rollback se vierem undefined
+    const payload = {
+      id: messageData.id,
+      ticketId: messageData.ticketId,
+      companyId, // <== não esqueça de persistir
+      contactId: messageData.contactId ?? null,
+      body: messageData.body ?? null,
+      fromMe: !!messageData.fromMe,
+      read: !!messageData.read,
+      mediaType: messageData.mediaType ?? null,
+      mediaUrl: messageData.mediaUrl ?? null, // <== se usa media, precisa existir no modelo
+      quotedMsgId: messageData.quotedMsgId ?? null,
+      ack: messageData.ack ?? 0,
+      remoteJid: messageData.remoteJid ?? null,
+      participant: messageData.participant ?? null,
+      dataJson: messageData.dataJson ?? null,
+      isEdited: messageData.isEdited ?? false,
+      ticketTrakingId: messageData.ticketTrakingId ?? null
+    };
+
+    const message = await Message.create(payload);
+
+    // carrega relacionamentos que o front usa
+    await message.reload({
+      include: [
+        { model: Ticket, as: "ticket" },
+        { model: Message, as: "quotedMsg", include: [{ model: Contact, as: "contact" }] },
+        { model: Contact, as: "contact" }
+      ]
+    });
+
+    // Emite no mesmo padrão que o front escuta
+    io.to(message.ticketId.toString()).emit(
+      `company-${companyId}-appMessage`,
+      { action: "create", message }
+    );
+
+    console.log("[CreateMessageService] inserted id:", message.id);
+    return message;
+  } catch (err) {
+    console.error("[CreateMessageService] INSERT FAILED:", err);
+    throw err; // não silencie — deixe estourar 500 se der ruim
+  }
 };
 
 export default CreateMessageService;

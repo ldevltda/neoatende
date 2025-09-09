@@ -61,7 +61,7 @@ export const index = async (req: Request, res: Response): Promise<Response> => {
     queues
   });
 
-  SetTicketMessagesAsRead(ticket);
+  await SetTicketMessagesAsRead(ticket);
 
   return res.json({ count, messages, ticket, hasMore });
 };
@@ -74,11 +74,11 @@ export const store = async (req: Request, res: Response): Promise<Response> => {
 
   const ticket = await ShowTicketService(ticketId, companyId);
 
-  SetTicketMessagesAsRead(ticket);
+  await SetTicketMessagesAsRead(ticket);
 
   // Envio de mídia (suporta múltiplas mídias e body em array alinhado)
   if (medias && medias.length > 0) {
-    const bodies = Array.isArray(body) ? body : medias.map(() => body as string);
+    const bodies = Array.isArray(body) ? body : medias.map(() => (body as string) ?? "");
 
     await Promise.all(
       medias.map(async (media: Express.Multer.File, index) => {
@@ -216,7 +216,7 @@ export const send = async (req: Request, res: Response): Promise<Response> => {
       }, 1000);
     }
 
-    SetTicketMessagesAsRead(ticket);
+    await SetTicketMessagesAsRead(ticket);
 
     return res.send({ mensagem: "Mensagem enviada" });
   } catch (err: any) {
