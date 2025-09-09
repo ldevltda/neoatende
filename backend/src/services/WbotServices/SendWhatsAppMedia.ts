@@ -1,182 +1,112 @@
 import { WAMessage, AnyMessageContent } from "baileys";
 import * as Sentry from "@sentry/node";
 import fs from "fs";
-import { exec } from "child_process";
 import path from "path";
-import ffmpegPath from "@ffmpeg-installer/ffmpeg";
+import { lookup as mimeLookup } from "mime-types";
 import AppError from "../../errors/AppError";
 import GetTicketWbot from "../../helpers/GetTicketWbot";
 import Ticket from "../../models/Ticket";
-import { lookup } from "mime-types";
 import formatBody from "../../helpers/Mustache";
+
+// ✅ service de criação (já em seu projeto)
+import CreateMessageService from "../MessageServices/CreateMessageService";
 
 interface Request {
   media: Express.Multer.File;
   ticket: Ticket;
   body?: string;
+  // se for reply/quote de uma mensagem específica
+  quotedId?: string;
 }
-
-const publicFolder = path.resolve(__dirname, "..", "..", "..", "public");
-
-const processAudio = async (audio: string): Promise<string> => {
-  const outputAudio = `${publicFolder}/${new Date().getTime()}.mp3`;
-  return new Promise((resolve, reject) => {
-    exec(
-      `${ffmpegPath.path} -i ${audio} -vn -ab 128k -ar 44100 -f ipod ${outputAudio} -y`,
-      (error, _stdout, _stderr) => {
-        if (error) reject(error);
-        fs.unlinkSync(audio);
-        resolve(outputAudio);
-      }
-    );
-  });
-};
-
-const processAudioFile = async (audio: string): Promise<string> => {
-  const outputAudio = `${publicFolder}/${new Date().getTime()}.mp3`;
-  return new Promise((resolve, reject) => {
-    exec(
-      `${ffmpegPath.path} -i ${audio} -vn -ar 44100 -ac 2 -b:a 192k ${outputAudio}`,
-      (error, _stdout, _stderr) => {
-        if (error) reject(error);
-        fs.unlinkSync(audio);
-        resolve(outputAudio);
-      }
-    );
-  });
-};
-
-export const getMessageOptions = async (
-  fileName: string,
-  pathMedia: string,
-  body?: string
-): Promise<any> => {
-  const mimeType = lookup(pathMedia) || "";
-  const typeMessage = mimeType.split("/")[0];
-
-  try {
-    if (!mimeType) {
-      throw new Error("Invalid mimetype");
-    }
-    let options: AnyMessageContent;
-
-    if (typeMessage === "video") {
-      options = {
-        video: fs.readFileSync(pathMedia),
-        caption: body ? body : "",
-        fileName: fileName
-        // gifPlayback: true
-      };
-    } else if (typeMessage === "audio") {
-      const typeAudio = true; //fileName.includes("audio-record-site");
-      const convert = await processAudio(pathMedia);
-      if (typeAudio) {
-        options = {
-          audio: fs.readFileSync(convert),
-          mimetype: typeAudio ? "audio/mp4" : mimeType,
-          caption: body ? body : null,
-          ptt: true
-        };
-      } else {
-        options = {
-          audio: fs.readFileSync(convert),
-          mimetype: typeAudio ? "audio/mp4" : mimeType,
-          caption: body ? body : null,
-          ptt: true
-        };
-      }
-    } else if (typeMessage === "document") {
-      options = {
-        document: fs.readFileSync(pathMedia),
-        caption: body ? body : null,
-        fileName: fileName,
-        mimetype: mimeType
-      };
-    } else if (typeMessage === "application") {
-      options = {
-        document: fs.readFileSync(pathMedia),
-        caption: body ? body : null,
-        fileName: fileName,
-        mimetype: mimeType
-      };
-    } else {
-      options = {
-        image: fs.readFileSync(pathMedia),
-        caption: body ? body : null
-      };
-    }
-
-    return options;
-  } catch (e) {
-    Sentry.captureException(e);
-    console.log(e);
-    return null;
-  }
-};
 
 const SendWhatsAppMedia = async ({
   media,
   ticket,
-  body
+  body,
+  quotedId
 }: Request): Promise<WAMessage> => {
   try {
     const wbot = await GetTicketWbot(ticket);
 
-    const pathMedia = media.path;
-    const typeMessage = media.mimetype.split("/")[0];
-    let options: AnyMessageContent;
-    const bodyMessage = formatBody(body, ticket.contact);
+    const jid = `${ticket.contact.number}@${ticket.isGroup ? "g.us" : "s.whatsapp.net"}`;
+    const bodyMessage = formatBody(body || "", ticket.contact);
 
-    if (typeMessage === "video") {
+    // monta o conteúdo de mídia conforme o mimetype
+    const tempFilePath = media.path ?? (media as any).filepath ?? media.filename;
+    const absolutePath = path.isAbsolute(tempFilePath)
+      ? tempFilePath
+      : path.join(process.cwd(), tempFilePath);
+
+    const mimetype = media.mimetype || mimeLookup(absolutePath) || "";
+    let options: AnyMessageContent;
+
+    if (mimetype.startsWith("image/")) {
+      options = { image: fs.readFileSync(absolutePath), caption: bodyMessage };
+    } else if (mimetype.startsWith("video/")) {
+      options = { video: fs.readFileSync(absolutePath), caption: bodyMessage };
+    } else if (mimetype.startsWith("audio/")) {
+      options = { audio: fs.readFileSync(absolutePath), ptt: false }; // ptt=true vira "áudio de voz"
+    } else if (mimetype === "application/pdf") {
       options = {
-        video: fs.readFileSync(pathMedia),
-        caption: bodyMessage,
-        fileName: media.originalname
-        // gifPlayback: true
-      };
-    } else if (typeMessage === "audio") {
-      const typeAudio = media.originalname.includes("audio-record-site");
-      if (typeAudio) {
-        const convert = await processAudio(media.path);
-        options = {
-          audio: fs.readFileSync(convert),
-          mimetype: typeAudio ? "audio/mp4" : media.mimetype,
-          ptt: true
-        };
-      } else {
-        const convert = await processAudioFile(media.path);
-        options = {
-          audio: fs.readFileSync(convert),
-          mimetype: typeAudio ? "audio/mp4" : media.mimetype
-        };
-      }
-    } else if (typeMessage === "document" || typeMessage === "text") {
-      options = {
-        document: fs.readFileSync(pathMedia),
-        caption: bodyMessage,
-        fileName: media.originalname,
-        mimetype: media.mimetype
-      };
-    } else if (typeMessage === "application") {
-      options = {
-        document: fs.readFileSync(pathMedia),
-        caption: bodyMessage,
-        fileName: media.originalname,
-        mimetype: media.mimetype
+        document: fs.readFileSync(absolutePath),
+        fileName: media.originalname || path.basename(absolutePath),
+        mimetype,
+        caption: bodyMessage
       };
     } else {
+      // genérico: envia como documento
       options = {
-        image: fs.readFileSync(pathMedia),
+        document: fs.readFileSync(absolutePath),
+        fileName: media.originalname || path.basename(absolutePath),
+        mimetype,
         caption: bodyMessage
       };
     }
 
-    const sentMessage = await wbot.sendMessage(
-      `${ticket.contact.number}@${ticket.isGroup ? "g.us" : "s.whatsapp.net"}`,
-      {
-        ...options
+    // quoted (opcional)
+    let sendOpts: any = {};
+    if (quotedId) {
+      const quoted = await (await import("../../models/Message")).default.findByPk(quotedId);
+      if (quoted?.dataJson) {
+        const msgFound = JSON.parse(quoted.dataJson as any);
+        sendOpts.quoted = { key: msgFound.key, message: msgFound.message };
       }
-    );
+    }
+
+    const sentMessage = await wbot.sendMessage(jid, options, { ...sendOpts });
+
+    // 🔸 Persistência imediata em "Messages"
+    const messageId =
+      sentMessage?.key?.id || (sentMessage as any)?.messageID || `${Date.now()}`;
+
+    // detectar tipo de mídia salvo
+    let mediaType: string = "document";
+    if ((options as any).image) mediaType = "image";
+    else if ((options as any).video) mediaType = "video";
+    else if ((options as any).audio) mediaType = "audio";
+    else if ((options as any).sticker) mediaType = "sticker";
+    else if ((options as any).document && mimetype === "application/pdf") mediaType = "application";
+    
+    const payload: any = {
+      id: messageId,
+      ticketId: ticket.id,
+      contactId: ticket.contactId,
+      body: bodyMessage || "",
+      fromMe: true,
+      read: true,
+      mediaType,
+      // 👉 se você já hospeda e expõe o arquivo publicamente, preencha aqui
+      mediaUrl: null,
+      ack: 1,
+      queueId: ticket.queueId ?? null,
+      remoteJid: sentMessage?.key?.remoteJid ?? jid,
+      dataJson: JSON.stringify(sentMessage)
+    };
+
+    await CreateMessageService({
+      companyId: ticket.companyId,
+      messageData: payload as any
+    });
 
     await ticket.update({ lastMessage: bodyMessage });
 
