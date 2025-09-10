@@ -1,77 +1,47 @@
-// frontend/src/components/common/AckBadge.jsx
 import React from "react";
 import { makeStyles } from "@material-ui/core/styles";
-import Chip from "@material-ui/core/Chip";
-import Tooltip from "@material-ui/core/Tooltip";
 import DoneIcon from "@material-ui/icons/Done";
 import DoneAllIcon from "@material-ui/icons/DoneAll";
-import VisibilityIcon from "@material-ui/icons/Visibility";
-import PlayArrowIcon from "@material-ui/icons/PlayArrow";
-import ScheduleIcon from "@material-ui/icons/Schedule";
 
-const useStyles = makeStyles((theme) => ({
-  chip: {
-    height: 22,
-    fontSize: 11,
-    paddingRight: theme.spacing(0.5),
-    "& svg": { fontSize: 16 },
+// Cores no estilo WhatsApp
+const WAGray = "#8696a0";   // cinza dos ticks
+const WABlue = "#34B7F1";   // azul de lido
+
+const useStyles = makeStyles(() => ({
+  wrap: {
+    display: "inline-flex",
+    alignItems: "center",
+    marginLeft: 6,
+    verticalAlign: "middle",
+    lineHeight: 0,
   },
-  // cores pensadas pra ficar legível em tema claro/escuro
-  pending: { background: theme.palette.grey[300] },
-  sent: { background: theme.palette.info.light, color: theme.palette.common.white },
-  delivered: { background: theme.palette.success.light, color: theme.palette.common.white },
-  read: { background: theme.palette.secondary.light, color: theme.palette.common.white },
-  played: { background: theme.palette.warning.light, color: theme.palette.common.white },
+  icon: {
+    fontSize: 16,
+  },
 }));
 
 /**
  * ack:
- * 0 = pendente (ainda construindo/envio local)
- * 1 = enviado/ack do servidor
- * 2 = entregueS
- * 3 = lido
- * 4 = reproduzido (áudio)
+ * 1 = enviado (✔ cinza)
+ * 2 = entregue (✔✔ cinza)
+ * 3 = lido (✔✔ azul)
+ * 4 = reproduzido (usa ✔✔ azul também)
  */
-const getAckMeta = (ack) => {
-  switch (ack) {
-    case 4:
-      return { label: "Reproduzido", icon: <PlayArrowIcon />, className: "played" };
-    case 3:
-      return { label: "Lido", icon: <VisibilityIcon />, className: "read" };
-    case 2:
-      return { label: "Entregue", icon: <DoneAllIcon />, className: "delivered" };
-    case 1:
-      return { label: "Enviado", icon: <DoneIcon />, className: "sent" };
-    case 0:
-    default:
-      return { label: "Pendente", icon: <ScheduleIcon />, className: "pending" };
-  }
-};
-
-const AckBadge = ({ ack = 0, size = "small", compact = false, className = "" }) => {
+const AckTicks = ({ ack = 0 }) => {
   const classes = useStyles();
-  const meta = getAckMeta(Number(ack));
-  const chipClass = classes[meta.className];
+  if (!ack) return null;
 
-  const chip = (
-    <Chip
-      className={`${classes.chip} ${chipClass} ${className}`}
-      size={size}
-      label={compact ? "" : meta.label}
-      icon={meta.icon}
-      variant="default"
-    />
-  );
+  const playedOrRead = ack >= 3;
+  const delivered = ack === 2;
+  const sent = ack === 1;
 
-  return compact ? (
-    <Tooltip title={meta.label} arrow placement="top">
-      <span>{chip}</span>
-    </Tooltip>
-  ) : (
-    <Tooltip title={meta.label} arrow placement="top">
-      <span>{chip}</span>
-    </Tooltip>
+  return (
+    <span className={classes.wrap}>
+      {sent && <DoneIcon className={classes.icon} style={{ color: WAGray }} />}
+      {delivered && <DoneAllIcon className={classes.icon} style={{ color: WAGray }} />}
+      {playedOrRead && <DoneAllIcon className={classes.icon} style={{ color: WABlue }} />}
+    </span>
   );
 };
 
-export default AckBadge;
+export default AckTicks;

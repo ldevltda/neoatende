@@ -34,6 +34,7 @@ import toastError from "../../errors/toastError";
 import { SocketContext } from "../../context/Socket/SocketContext";
 import { i18n } from "../../translate/i18n";
 import AckBadge from "../common/AckBadge";
+import { Block, ExpandMore, GetApp } from "@material-ui/icons";
 
 const useStyles = makeStyles((theme) => ({
   messagesListWrapper: {
@@ -515,18 +516,10 @@ const MessagesList = ({ ticket, ticketId, isGroup }) => {
   };
 
   const renderMessageAck = (message) => {
-    // só mostra para mensagens enviadas por mim
-    if (!message?.fromMe) return null;
-
-    // compat: se vier 5, trata como 4 (played)
-    const ack = Number(message?.ack === 5 ? 4 : message?.ack ?? 0);
-
-    return (
-      <span style={{ marginLeft: 6 }}>
-        <AckBadge ack={ack} compact />
-      </span>
-    );
-  };
+  if (!message?.fromMe) return null;
+  const ack = Number(message?.ack === 5 ? 4 : message?.ack ?? 0);
+  return <AckTicks ack={ack} />;
+};
 
   const renderDailyTimestamps = (message, index) => {
     if (index === 0) {
