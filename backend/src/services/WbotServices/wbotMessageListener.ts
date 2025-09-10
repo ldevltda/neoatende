@@ -22,6 +22,7 @@ import Ticket from "../../models/Ticket";
 import Message from "../../models/Message";
 
 import { getIO } from "../../libs/socket";
+import UpdateAckByMessageId from "../MessageServices/UpdateAckByMessageId";
 import CreateMessageService from "../MessageServices/CreateMessageService";
 import { logger } from "../../utils/logger";
 import CreateOrUpdateContactService from "../ContactServices/CreateOrUpdateContactService";
@@ -2974,14 +2975,83 @@ const wbotMessageListener = async (
       }
     });
 
-    wbot.ev.on("messages.update", (messageUpdate: WAMessageUpdate[]) => {
-      if (messageUpdate.length === 0) return;
-      messageUpdate.forEach(async (message: WAMessageUpdate) => {
-        (wbot as WASocket)!.readMessages([message.key]);
+    wbot.ev.on("messages.update", (updates) => {
+      try {
+        for (const u of updates) {
+          const id = u?.key?.id;
+          if (!id) continue;
 
-        handleMsgAck(message, message.update.status);
-      });
+          // 1) quando o Baileys envia "status" direto aqui
+          const ackFromStatus = mapStatusToAck((u as any)?.update?.status ?? (u as any)?.status);
+          if (ackFromStatus !== null) {
+            UpdateAckByMessageId({ id, ack: ackFromStatus }).catch(() => {});
+          }
+
+          // 2) alguns casos trazem "userReceipt" (ex.: múltiplos recebimentos em grupos)
+          const userReceipts: any[] = (u as any)?.update?.userReceipt || (u as any)?.userReceipt || [];
+          for (const r of userReceipts) {
+            // quando o tipo vier explícito
+            const t = String(r?.type || "").toLowerCase();
+            if (t === "read") {
+              UpdateAckByMessageId({ id, ack: 3 }).catch(() => {});
+            } else if (t === "delivery" || t === "delivered") {
+              UpdateAckByMessageId({ id, ack: 2 }).catch(() => {});
+            } else if (t === "played") {
+              UpdateAckByMessageId({ id, ack: 4 }).catch(() => {});
+            }
+          }
+        }
+      } catch (e) {
+        // não interrompe o fluxo do listener
+        console.log("messages.update ack patch error:", e);
+      }
     });
+    
+    wbot.ev.on("message-receipt.update", (receipts) => {
+      try {
+        for (const rec of receipts as any[]) {
+          const id = rec?.key?.id || rec?.id;
+          if (!id) continue;
+
+          // rec.event ou rec.type podem variar: "delivery" | "read" | "played"
+          const type = String(rec?.type || rec?.event || "").toLowerCase();
+
+          if (type === "read") {
+            UpdateAckByMessageId({ id, ack: 3 }).catch(() => {});
+          } else if (type === "delivery" || type === "delivered") {
+            UpdateAckByMessageId({ id, ack: 2 }).catch(() => {});
+          } else if (type === "played") {
+            UpdateAckByMessageId({ id, ack: 4 }).catch(() => {});
+          } else {
+            // fallback: se não veio "type", mas o receipt contém "read" truthy
+            if (rec?.read === true) {
+              UpdateAckByMessageId({ id, ack: 3 }).catch(() => {});
+            } else if (rec?.delivered === true) {
+              UpdateAckByMessageId({ id, ack: 2 }).catch(() => {});
+            }
+          }
+        }
+      } catch (e) {
+        console.log("message-receipt.update ack patch error:", e);
+      }
+    });
+
+    wbot.ev.on("messages.update", (updates) => {
+      try {
+        for (const u of updates) {
+          const id = u?.key?.id;
+          if (!id) continue;
+
+          // se vier played/ptt explicitamente no update (varia por versão)
+          if ((u as any)?.update?.played === true || (u as any)?.played === true) {
+            UpdateAckByMessageId({ id, ack: 4 }).catch(() => {});
+          }
+        }
+      } catch (e) {
+        console.log("messages.update played patch error:", e);
+      }
+    });
+
 
     // wbot.ev.on("messages.set", async (messageSet: IMessage) => {
     //   messageSet.messages.filter(filterMessages).map(msg => msg);
@@ -2991,5 +3061,24 @@ const wbotMessageListener = async (
     logger.error(`Error handling wbot message listener. Err: ${error}`);
   }
 };
+
+// Mapeia status/receipt do Baileys para o nosso ack [1..4]
+const mapStatusToAck = (status: number | string | undefined): number | null => {
+  // Baileys pode mandar number (1..3) ou string em algumas versões
+  if (status === undefined || status === null) return null;
+
+  if (typeof status === "number") {
+    // versões novas costumam usar 1=server, 2=delivery, 3=read
+    if (status >= 1 && status <= 4) return status;
+    return null;
+  }
+
+  const s = String(status).toLowerCase();
+  if (["server_ack", "sent", "ok"].includes(s)) return 1;
+  if (["delivery_ack", "delivered"].includes(s)) return 2;
+  if (["read", "read_ack", "played"].includes(s)) return s === "played" ? 4 : 3;
+  return null;
+};
+
 
 export { wbotMessageListener, handleMessage };
