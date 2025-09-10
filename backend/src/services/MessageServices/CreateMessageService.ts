@@ -7,57 +7,55 @@ export interface MessageData {
   id: string;
   ticketId: number;
   body: string;
-  contactId?: number;
+  contactId?: number | null;
   fromMe?: boolean;
   read?: boolean;
-  mediaType?: string;
-  mediaUrl?: string;
+  mediaType?: string | null;
+  mediaUrl?: string | null;
   ack?: number;
-  queueId?: number;
+  queueId?: number | null;
+  quotedMsgId?: string | null;
+  remoteJid?: string | null;
+  dataJson?: string | null;
+  isDeleted?: boolean;
+  isEdited?: boolean;
 }
+
 interface Request {
-  messageData: MessageData;
   companyId: number;
+  messageData: MessageData;
 }
 
 const CreateMessageService = async ({
-  messageData,
-  companyId
+  companyId,
+  messageData
 }: Request): Promise<Message> => {
-  await Message.upsert({ ...messageData, companyId });
+  // defaults seguros
+  const payload: any = {
+    ...messageData,
+    companyId,                   // <-- CRÍTICO: sempre gravar companyId
+    fromMe: messageData.fromMe ?? false,
+    read: messageData.read ?? false,
+    ack: messageData.ack ?? 0,
+    mediaType: messageData.mediaType ?? "chat",
+    isDeleted: messageData.isDeleted ?? false,
+    isEdited: messageData.isEdited ?? false
+  };
 
-  const message = await Message.findByPk(messageData.id, {
+  // cria e inclui relações necessárias pro socket emitir corretamente
+  const message = await Message.create(payload, {
     include: [
-      "contact",
-      {
-        model: Ticket,
-        as: "ticket",
-        include: [
-          "contact",
-          "queue",
-          {
-            model: Whatsapp,
-            as: "whatsapp",
-            attributes: ["name"]
-          }
-        ]
-      },
-      {
-        model: Message,
-        as: "quotedMsg",
-        include: ["contact"]
-      }
+      { model: Ticket, as: "ticket" },
+      { model: Whatsapp, as: "whatsapp" }
     ]
   });
 
-  if (message.ticket.queueId !== null && message.queueId === null) {
+  // se o ticket tem queue e a msg não veio com queueId, herda
+  if (message.ticket?.queueId && !message.queueId) {
     await message.update({ queueId: message.ticket.queueId });
   }
 
-  if (!message) {
-    throw new Error("ERR_CREATING_MESSAGE");
-  }
-
+  // emite para a tela de tickets
   const io = getIO();
   io.to(message.ticketId.toString())
     .to(`company-${companyId}-${message.ticket.status}`)
