@@ -1,61 +1,61 @@
 import IORedis, { RedisOptions } from "ioredis";
 import { REDIS_URI_CONNECTION } from "../config/redis";
 import * as crypto from "crypto";
+import dns from "dns/promises";
 
 /**
- * Conexão Redis robusta:
- * - Usa a URL original (não troca hostname por IP)
- * - Habilita TLS somente quando schema for rediss://
- * - SNI correto (servername = hostname)
- * - Sem forçar IPv6
+ * Criamos o cliente Redis de forma lazy (on-demand) para:
+ * - Resolver o hostname para IPv6 (AAAA), que é o que o Fly expõe no nslookup
+ * - Habilitar TLS automaticamente quando a URL for rediss://
+ * - Usar opções de reconexão estáveis
  */
 
 let redisPromise: Promise<IORedis> | null = null;
 
-function createRedis(): IORedis {
-  if (!REDIS_URI_CONNECTION) {
-    console.warn("[redis] REDIS_URI_CONNECTION não definido — cache desabilitado.");
-    // cria um client “dummy” que sempre falha para evitar null checks
-    // (ou você pode lançar um erro se preferir)
-  }
-
+async function createRedis(): Promise<IORedis> {
+  // Faz o parse da URL (funciona para redis:// e rediss://)
   const u = new URL(REDIS_URI_CONNECTION);
   const isTLS = u.protocol === "rediss:";
+  const port = Number(u.port || "6379");
+  const username = u.username || undefined;
+  const password = u.password || undefined;
 
-  const baseOptions: RedisOptions = {
-    // não forçar família/IP — deixe o driver resolver
-    // robustez de reconexão
+  // Resolve hostname para IPv6 (AAAA) — se falhar, usa o host original
+  let host = u.hostname;
+  try {
+    const { address } = await dns.lookup(u.hostname, { family: 6 });
+    host = address;
+  } catch {
+    // sem drama; segue com o hostname
+  }
+
+  const options: RedisOptions = {
+    host,
+    port,
+    username,
+    password,
+    // família IPv6 melhora com Fly/Upstash
+    family: 6,
+    // opções de robustez
     maxRetriesPerRequest: null,
     enableReadyCheck: true,
     retryStrategy: (times) => Math.min(times * 200, 2000),
     reconnectOnError: () => true,
+    ...(isTLS ? { tls: {} } : {})
   };
 
-  const tlsOptions: RedisOptions = isTLS
-    ? {
-        tls: {
-          // MUITO importante para SNI: usa o hostname da URL
-          servername: u.hostname,
-          // alguns provedores (Upstash, proxies) exigem isso atrás de LB
-          rejectUnauthorized: false,
-        } as any,
-      }
-    : {};
+  const client = new IORedis(options);
 
-  // passa a URL completa + opções
-  const client = new IORedis(REDIS_URI_CONNECTION, {
-    ...baseOptions,
-    ...tlsOptions,
+  // logs “amigáveis” (não derrubam o processo)
+  client.on("error", (e) => {
+    console.warn("[redis] " + e.message);
   });
-
-  client.on("connect", () => console.info("[redis] conectado"));
-  client.on("error", (e) => console.warn("[redis] " + e.message));
 
   return client;
 }
 
 async function getRedis(): Promise<IORedis> {
-  if (!redisPromise) redisPromise = Promise.resolve(createRedis());
+  if (!redisPromise) redisPromise = createRedis();
   return redisPromise;
 }
 
@@ -93,7 +93,7 @@ export async function set(
 ) {
   const redis = await getRedis();
   if (option !== undefined && optionValue !== undefined) {
-    // @ts-ignore
+    // @ts-ignore – ioredis aceita as variações corretamente
     return redis.set(key, value, option, optionValue);
   }
   return redis.set(key, value);
@@ -129,5 +129,5 @@ export const cacheLayer = {
   getKeys,
   del,
   delFromParams,
-  delFromPattern,
+  delFromPattern
 };
