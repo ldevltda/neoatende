@@ -12,14 +12,7 @@ import {
   makeStyles,
 } from "@material-ui/core";
 
-import {
-  AccessTime,
-  Block,
-  Done,
-  DoneAll,
-  ExpandMore,
-  GetApp,
-} from "@material-ui/icons";
+import { Block, ExpandMore, GetApp } from "@material-ui/icons";
 
 import MarkdownWrapper from "../MarkdownWrapper";
 import ModalImageCors from "../ModalImageCors";
@@ -33,7 +26,7 @@ import api from "../../services/api";
 import toastError from "../../errors/toastError";
 import { SocketContext } from "../../context/Socket/SocketContext";
 import { i18n } from "../../translate/i18n";
-import AckBadge from "../common/AckBadge";
+import AckTicks from "../common/AckTicks";
 
 const useStyles = makeStyles((theme) => ({
   messagesListWrapper: {
