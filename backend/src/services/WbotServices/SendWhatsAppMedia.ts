@@ -93,9 +93,8 @@ const SendWhatsAppMedia = async ({
       contactId: ticket.contactId,
       body: bodyMessage || "",
       fromMe: true,
-      read: true,
+      read: false,
       mediaType,
-      // 👉 se você já hospeda e expõe o arquivo publicamente, preencha aqui
       mediaUrl: null,
       ack: 1,
       queueId: ticket.queueId ?? null,

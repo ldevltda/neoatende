@@ -2981,31 +2981,27 @@ const wbotMessageListener = async (
           const id = u?.key?.id;
           if (!id) continue;
 
-          // 1) quando o Baileys envia "status" direto aqui
-          const ackFromStatus = mapStatusToAck((u as any)?.update?.status ?? (u as any)?.status);
-          if (ackFromStatus !== null) {
-            UpdateAckByMessageId({ id, ack: ackFromStatus }).catch(() => {});
-          }
+          // ⚠️ NÃO usar u.update.status / u.status para subir ACK.
+          // Alguns updates chegam com valores que não significam 'read'.
 
-          // 2) alguns casos trazem "userReceipt" (ex.: múltiplos recebimentos em grupos)
-          const userReceipts: any[] = (u as any)?.update?.userReceipt || (u as any)?.userReceipt || [];
+          // Use apenas userReceipt (quando presente)
+          const userReceipts = (u as any)?.update?.userReceipt || (u as any)?.userReceipt || [];
           for (const r of userReceipts) {
-            // quando o tipo vier explícito
-            const t = String(r?.type || "").toLowerCase();
-            if (t === "read") {
-              UpdateAckByMessageId({ id, ack: 3 }).catch(() => {});
-            } else if (t === "delivery" || t === "delivered") {
+            const type = String(r?.type || "").toLowerCase();
+            if (type === "delivery" || type === "delivered") {
               UpdateAckByMessageId({ id, ack: 2 }).catch(() => {});
-            } else if (t === "played") {
+            } else if (type === "read") {
+              UpdateAckByMessageId({ id, ack: 3 }).catch(() => {});
+            } else if (type === "played") {
               UpdateAckByMessageId({ id, ack: 4 }).catch(() => {});
             }
           }
         }
       } catch (e) {
-        // não interrompe o fluxo do listener
         console.log("messages.update ack patch error:", e);
       }
     });
+
     
     wbot.ev.on("message-receipt.update", (receipts) => {
       try {
@@ -3013,22 +3009,14 @@ const wbotMessageListener = async (
           const id = rec?.key?.id || rec?.id;
           if (!id) continue;
 
-          // rec.event ou rec.type podem variar: "delivery" | "read" | "played"
           const type = String(rec?.type || rec?.event || "").toLowerCase();
 
-          if (type === "read") {
-            UpdateAckByMessageId({ id, ack: 3 }).catch(() => {});
-          } else if (type === "delivery" || type === "delivered") {
+          if (type === "delivery" || type === "delivered") {
             UpdateAckByMessageId({ id, ack: 2 }).catch(() => {});
+          } else if (type === "read") {
+            UpdateAckByMessageId({ id, ack: 3 }).catch(() => {});
           } else if (type === "played") {
             UpdateAckByMessageId({ id, ack: 4 }).catch(() => {});
-          } else {
-            // fallback: se não veio "type", mas o receipt contém "read" truthy
-            if (rec?.read === true) {
-              UpdateAckByMessageId({ id, ack: 3 }).catch(() => {});
-            } else if (rec?.delivered === true) {
-              UpdateAckByMessageId({ id, ack: 2 }).catch(() => {});
-            }
           }
         }
       } catch (e) {

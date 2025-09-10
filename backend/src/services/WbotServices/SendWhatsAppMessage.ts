@@ -62,7 +62,7 @@ const SendWhatsAppMessage = async ({
       contactId: ticket.contactId,
       body: text,
       fromMe: true,
-      read: true,
+      read: false,
       mediaType: "chat",
       mediaUrl: null,
       ack: 1, // 1 = enviado/aceito pelo servidor (você pode evoluir com updates de ack)
