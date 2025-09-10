@@ -1,74 +1,62 @@
 import { getIO } from "../../libs/socket";
 import Message from "../../models/Message";
 import Ticket from "../../models/Ticket";
-import Whatsapp from "../../models/Whatsapp";
 
 export interface MessageData {
   id: string;
   ticketId: number;
   body: string;
-  contactId?: number;
+  contactId?: number | null;
   fromMe?: boolean;
   read?: boolean;
-  mediaType?: string;
-  mediaUrl?: string;
+  mediaType?: string | null;
+  mediaUrl?: string | null;
   ack?: number;
-  queueId?: number;
+  queueId?: number | null;
+  quotedMsgId?: string | null;
+  remoteJid?: string | null;
+  dataJson?: string | null;
+  isDeleted?: boolean;
+  isEdited?: boolean;
 }
+
 interface Request {
-  messageData: MessageData;
   companyId: number;
+  messageData: MessageData;
 }
 
 const CreateMessageService = async ({
-  messageData,
-  companyId
+  companyId,
+  messageData
 }: Request): Promise<Message> => {
-  await Message.upsert({ ...messageData, companyId });
+  // 1) cria “seco” + defaults
+  const payload: any = {
+    ...messageData,
+    companyId,                          // <- garante sempre
+    fromMe: messageData.fromMe ?? false,
+    read: messageData.read ?? false,
+    ack: messageData.ack ?? 0,
+    mediaType: messageData.mediaType ?? "chat",
+    isDeleted: messageData.isDeleted ?? false,
+    isEdited: messageData.isEdited ?? false
+  };
 
-  const message = await Message.findByPk(messageData.id, {
-    include: [
-      "contact",
-      {
-        model: Ticket,
-        as: "ticket",
-        include: [
-          "contact",
-          "queue",
-          {
-            model: Whatsapp,
-            as: "whatsapp",
-            attributes: ["name"]
-          }
-        ]
-      },
-      {
-        model: Message,
-        as: "quotedMsg",
-        include: ["contact"]
-      }
-    ]
+  const message = await Message.create(payload);
+
+  // 2) pega o ticket separadamente (com o que a UI precisa)
+  const ticket = await Ticket.findByPk(message.ticketId, {
+    include: ["contact", "whatsapp", "queue"] as any
   });
 
-  if (message.ticket.queueId !== null && message.queueId === null) {
-    await message.update({ queueId: message.ticket.queueId });
-  }
-
-  if (!message) {
-    throw new Error("ERR_CREATING_MESSAGE");
-  }
-
+  // 3) emite sockets esperados pela UI
   const io = getIO();
   io.to(message.ticketId.toString())
-    .to(`company-${companyId}-${message.ticket.status}`)
-    .to(`company-${companyId}-notification`)
-    .to(`queue-${message.ticket.queueId}-${message.ticket.status}`)
-    .to(`queue-${message.ticket.queueId}-notification`)
+    .to(`company-${companyId}-appMessage`)
     .emit(`company-${companyId}-appMessage`, {
       action: "create",
-      message,
-      ticket: message.ticket,
-      contact: message.ticket.contact
+      message,              // Sequelize instance serializa ok
+      ticket,               // a UI usa em alguns pontos
+      contact: ticket?.contact
     });
 
   return message;
