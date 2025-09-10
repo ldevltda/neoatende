@@ -34,7 +34,6 @@ import toastError from "../../errors/toastError";
 import { SocketContext } from "../../context/Socket/SocketContext";
 import { i18n } from "../../translate/i18n";
 import AckBadge from "../common/AckBadge";
-import { Block, ExpandMore, GetApp } from "@material-ui/icons";
 
 const useStyles = makeStyles((theme) => ({
   messagesListWrapper: {
