@@ -14,6 +14,7 @@ import routes from "./routes";
 import { logger } from "./utils/logger";
 import { messageQueue, sendScheduledMessages } from "./queues";
 import bodyParser from "body-parser";
+import OpenaiRoutes from "./routes/OpenaiRoutes";
 
 Sentry.init({ dsn: process.env.SENTRY_DSN });
 
@@ -77,5 +78,8 @@ app.use(async (err: Error, req: Request, res: Response, _next: NextFunction) => 
   logger.error(err);
   return res.status(500).json({ error: "ERR_INTERNAL_SERVER_ERROR" });
 });
+
+// Openai
+app.use("/openai", OpenaiRoutes);
 
 export default app;

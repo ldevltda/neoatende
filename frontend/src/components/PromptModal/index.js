@@ -1,312 +1,129 @@
-import React, { useState, useEffect } from "react";
-
-import * as Yup from "yup";
-import { Formik, Form, Field } from "formik";
-import { toast } from "react-toastify";
-
-import { makeStyles } from "@material-ui/core/styles";
-import { green } from "@material-ui/core/colors";
-import Button from "@material-ui/core/Button";
-import TextField from "@material-ui/core/TextField";
-import Dialog from "@material-ui/core/Dialog";
-import DialogActions from "@material-ui/core/DialogActions";
-import DialogContent from "@material-ui/core/DialogContent";
-import DialogTitle from "@material-ui/core/DialogTitle";
-import CircularProgress from "@material-ui/core/CircularProgress";
-import { i18n } from "../../translate/i18n";
-import { MenuItem, FormControl, InputLabel, Select, Menu, Grid } from "@material-ui/core";
-import { Visibility, VisibilityOff } from "@material-ui/icons";
-import { InputAdornment, IconButton } from "@material-ui/core";
-import QueueSelectSingle from "../../components/QueueSelectSingle";
-
+// frontend/src/components/PromptModal/index.js
+import React, { useEffect, useState } from "react";
+import {
+  Dialog, DialogTitle, DialogContent, DialogActions,
+  Button, TextField, Grid, MenuItem
+} from "@material-ui/core";
+import PromptWizard from "../prompt/PromptWizard";
 import api from "../../services/api";
-import toastError from "../../errors/toastError";
 
-const useStyles = makeStyles(theme => ({
-    root: {
-        display: "flex",
-        flexWrap: "wrap",
-    },
-    multFieldLine: {
-        display: "flex",
-        "& > *:not(:last-child)": {
-            marginRight: theme.spacing(1),
-        },
-    },
+export default function PromptModal({ open, onClose, promptId, refreshPrompts }) {
+  const [values, setValues] = useState({
+    name: "",
+    apiKey: "",
+    prompt: "",
+    model: "gpt-3.5-turbo",
+    temperature: 1,
+    maxTokens: 100,
+    historyMessages: 10,
+    queueId: "",
+  });
 
-    btnWrapper: {
-        position: "relative",
-    },
+  const [wizardOpen, setWizardOpen] = useState(false);
 
-    buttonProgress: {
-        color: green[500],
-        position: "absolute",
-        top: "50%",
-        left: "50%",
-        marginTop: -12,
-        marginLeft: -12,
-    },
-    formControl: {
-        margin: theme.spacing(1),
-        minWidth: 120,
-    },
-    colorAdorment: {
-        width: 20,
-        height: 20,
-    },
-}));
-
-const PromptSchema = Yup.object().shape({
-    name: Yup.string().min(5, i18n.t("promptModal.formErrors.name.short")).max(100, i18n.t("promptModal.formErrors.name.long")).required(i18n.t("promptModal.formErrors.name.required")),
-    prompt: Yup.string().min(50, i18n.t("promptModal.formErrors.prompt.short")).required(i18n.t("promptModal.formErrors.prompt.required")),
-    model: Yup.string().required(i18n.t("promptModal.formErrors.modal.required")),
-    maxTokens: Yup.number().required(i18n.t("promptModal.formErrors.maxTokens.required")),
-    temperature: Yup.number().required(i18n.t("promptModal.formErrors.temperature.required")),
-    apiKey: Yup.string().required(i18n.t("promptModal.formErrors.apikey.required")),
-    queueId: Yup.number().required(i18n.t("promptModal.formErrors.queueId.required")),
-    maxMessages: Yup.number().required(i18n.t("promptModal.formErrors.maxMessages.required"))
-});
-
-const PromptModal = ({ open, onClose, promptId, refreshPrompts }) => {
-    const classes = useStyles();
-    const [selectedModel, setSelectedModel] = useState("gpt-3.5-turbo-1106");
-    const [showApiKey, setShowApiKey] = useState(false);
-
-    const handleToggleApiKey = () => {
-        setShowApiKey(!showApiKey);
+  useEffect(() => {
+    const load = async () => {
+      if (!promptId) return;
+      const { data } = await api.get(`/prompt/${promptId}`);
+      setValues({
+        name: data.name,
+        apiKey: data.apiKey || "",
+        prompt: data.prompt || "",
+        model: data.model || "gpt-3.5-turbo",
+        temperature: data.temperature ?? 1,
+        maxTokens: data.maxTokens ?? 100,
+        historyMessages: data.historyMessages ?? 10,
+        queueId: data.queueId || "",
+      });
     };
+    load();
+  }, [promptId]);
 
-    const initialState = {
-        name: "",
-        prompt: "",
-        model: "gpt-3.5-turbo-1106",
-        maxTokens: 100,
-        temperature: 1,
-        apiKey: "",
-        queueId: '',
-        maxMessages: 10
-    };
+  const handleSave = async () => {
+    if (promptId) {
+      await api.put(`/prompt/${promptId}`, values);
+    } else {
+      await api.post("/prompt", values);
+    }
+    await refreshPrompts?.();
+    onClose?.();
+  };
 
-    const [prompt, setPrompt] = useState(initialState);
+  const handleGenerated = (data) => {
+    // data: { prompt, summary, meta }
+    setValues(prev => ({
+      ...prev,
+      prompt: data.prompt,
+      name: prev.name || data.summary, // se não tiver nome, usa o resumo
+      // Se quiser guardar meta: metaJson: JSON.stringify(data.meta)
+    }));
+  };
 
-    useEffect(() => {
-        const fetchPrompt = async () => {
-            if (!promptId) {
-                setPrompt(initialState);
-                return;
-            }
-            try {
-                const { data } = await api.get(`/prompt/${promptId}`);
-                setPrompt(prevState => {
-                    return { ...prevState, ...data };
-                });
-                
-                setSelectedModel(data.model);
-            } catch (err) { 
-                toastError(err);
-            }
-        };
+  return (
+    <>
+      <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
+        <DialogTitle>{promptId ? "Editar Prompt" : "Adicionar Prompt"}</DialogTitle>
+        <DialogContent dividers>
+          <Grid container spacing={2}>
+            <Grid item xs={12} sm={8}>
+              <TextField label="Nome" fullWidth value={values.name}
+                onChange={e=>setValues({ ...values, name:e.target.value })}/>
+            </Grid>
+            <Grid item xs={12} sm={4}>
+              <Button fullWidth variant="outlined" style={{ height: 56, marginTop: 4 }}
+                onClick={()=>setWizardOpen(true)}>
+                Gerar Prompt Inteligente
+              </Button>
+            </Grid>
 
-        fetchPrompt();
-    }, [promptId, open]);
+            <Grid item xs={12}>
+              <TextField label="API Key" fullWidth type="password" value={values.apiKey}
+                onChange={e=>setValues({ ...values, apiKey:e.target.value })}/>
+            </Grid>
 
-    const handleClose = () => {
-        setPrompt(initialState);
-        setSelectedModel("gpt-3.5-turbo-1106");
-        onClose();
-    };
+            <Grid item xs={12}>
+              <TextField label="Prompt" fullWidth multiline minRows={10} value={values.prompt}
+                onChange={e=>setValues({ ...values, prompt:e.target.value })}/>
+            </Grid>
 
-    const handleChangeModel = (e) => {
-        setSelectedModel(e.target.value);
-    };
+            <Grid item xs={12} sm={6}>
+              <TextField select label="Modelo" fullWidth value={values.model}
+                onChange={e=>setValues({ ...values, model:e.target.value })}>
+                <MenuItem value="gpt-3.5-turbo">GPT-3.5 Turbo</MenuItem>
+                <MenuItem value="gpt-4o-mini">GPT-4o mini</MenuItem>
+                <MenuItem value="gpt-4o">GPT-4o</MenuItem>
+              </TextField>
+            </Grid>
 
-    const handleSavePrompt = async values => {
-        const promptData = { ...values, model: selectedModel };
-        console.log(promptData);
-        if (!values.queueId) {
-            toastError(i18n.t("promptModal.setor"));
-            return;
-        }
-        try {
-            if (promptId) {
-                await api.put(`/prompt/${promptId}`, promptData);
-            } else {
-                await api.post("/prompt", promptData);
-            }
-            toast.success(i18n.t("promptModal.success"));
-            refreshPrompts(  )
-        } catch (err) {
-            toastError(err);
-        }
-        handleClose();
-    };
+            <Grid item xs={12} sm={3}>
+              <TextField label="Temperatura" type="number" fullWidth value={values.temperature}
+                onChange={e=>setValues({ ...values, temperature:Number(e.target.value) })}/>
+            </Grid>
+            <Grid item xs={12} sm={3}>
+              <TextField label="Máx. Tokens Resposta" type="number" fullWidth value={values.maxTokens}
+                onChange={e=>setValues({ ...values, maxTokens:Number(e.target.value) })}/>
+            </Grid>
 
-    return (
-        <div className={classes.root}>
-            <Dialog
-                open={open}
-                onClose={handleClose}
-                maxWidth="md"
-                scroll="paper"
-                fullWidth
-            >
-                <DialogTitle id="form-dialog-title">
-                    {promptId
-                        ? `${i18n.t("promptModal.title.edit")}`
-                        : `${i18n.t("promptModal.title.add")}`}
-                </DialogTitle>
-                <Formik
-                    initialValues={prompt}
-                    enableReinitialize={true}
-                    validationSchema={PromptSchema}
-                    onSubmit={(values, actions) => {
-                        setTimeout(() => {
-                            handleSavePrompt(values);
-                            actions.setSubmitting(false);
-                        }, 400);
-                    }}
-                >
-                    {({ touched, errors, isSubmitting, values }) => (
-                        <Form style={{ width: "100%" }}>
-                            <DialogContent dividers>
-                                <Field
-                                    as={TextField}
-                                    label={i18n.t("promptModal.form.name")}
-                                    name="name"
-                                    error={touched.name && Boolean(errors.name)}
-                                    helperText={touched.name && errors.name}
-                                    variant="outlined"
-                                    margin="dense"
-                                    fullWidth
-                                />
-                                <FormControl fullWidth margin="dense" variant="outlined">
-                                    <Field
-                                        as={TextField}
-                                        label={i18n.t("promptModal.form.apikey")}
-                                        name="apiKey"
-                                        type={showApiKey ? 'text' : 'password'}
-                                        error={touched.apiKey && Boolean(errors.apiKey)}
-                                        helperText={touched.apiKey && errors.apiKey}
-                                        variant="outlined"
-                                        margin="dense"
-                                        fullWidth
-                                        InputProps={{
-                                            endAdornment: (
-                                                <InputAdornment position="end">
-                                                    <IconButton onClick={handleToggleApiKey}>
-                                                        {showApiKey ? <VisibilityOff /> : <Visibility />}
-                                                    </IconButton>
-                                                </InputAdornment>
-                                            ),
-                                        }}
-                                    />
-                                </FormControl>
-                                <Field
-                                    as={TextField}
-                                    label={i18n.t("promptModal.form.prompt")}
-                                    name="prompt"
-                                    error={touched.prompt && Boolean(errors.prompt)}
-                                    helperText={touched.prompt && errors.prompt}
-                                    variant="outlined"
-                                    margin="dense"
-                                    fullWidth
-                                    rows={10}
-                                    multiline={true}
-                                />
-                                <QueueSelectSingle touched={touched} errors={errors}/>
-                                <div className={classes.multFieldLine}>
-                                    <FormControl fullWidth margin="dense" variant="outlined">
-                                    <InputLabel>{i18n.t("promptModal.form.model")}</InputLabel>
-                                        <Select
-                                            id="type-select"
-                                            labelWidth={60}
-                                            name="model"
-                                            value={selectedModel}
-                                            onChange={handleChangeModel}
-                                            multiple={false}
-                                        >
-                                            <MenuItem key={"gpt-3.5"} value={"gpt-3.5-turbo-1106"}>
-                                                GPT 3.5 turbo
-                                            </MenuItem>
-                                            <MenuItem key={"gpt-4"} value={"gpt-4o-mini"}>
-                                                GPT 4.0
-                                            </MenuItem>
-                                        </Select>
-                                    </FormControl>
-                                    <Field
-                                        as={TextField}
-                                        label={i18n.t("promptModal.form.temperature")}
-                                        name="temperature"
-                                        error={touched.temperature && Boolean(errors.temperature)}
-                                        helperText={touched.temperature && errors.temperature}
-                                        variant="outlined"
-                                        margin="dense"
-                                        fullWidth
-                                        type="number"
-                                        inputProps={{
-                                            step: "0.1",
-                                            min: "0",
-                                            max: "1"
-                                        }}
-                                    />
-                                </div>
-                                
-                                <div className={classes.multFieldLine}>
-                                    <Field
-                                        as={TextField}
-                                        label={i18n.t("promptModal.form.max_tokens")}
-                                        name="maxTokens"
-                                        error={touched.maxTokens && Boolean(errors.maxTokens)}
-                                        helperText={touched.maxTokens && errors.maxTokens}
-                                        variant="outlined"
-                                        margin="dense"
-                                        fullWidth
-                                    />
-                                    <Field
-                                        as={TextField}
-                                        label={i18n.t("promptModal.form.max_messages")}
-                                        name="maxMessages"
-                                        error={touched.maxMessages && Boolean(errors.maxMessages)}
-                                        helperText={touched.maxMessages && errors.maxMessages}
-                                        variant="outlined"
-                                        margin="dense"
-                                        fullWidth
-                                    />
-                                </div>
-                            </DialogContent>
-                            <DialogActions>
-                                <Button
-                                    onClick={handleClose}
-                                    color="secondary"
-                                    disabled={isSubmitting}
-                                    variant="outlined"
-                                >
-                                    {i18n.t("promptModal.buttons.cancel")}
-                                </Button>
-                                <Button
-                                    type="submit"
-                                    color="primary"
-                                    disabled={isSubmitting}
-                                    variant="contained"
-                                    className={classes.btnWrapper}
-                                >
-                                    {promptId
-                                        ? `${i18n.t("promptModal.buttons.okEdit")}`
-                                        : `${i18n.t("promptModal.buttons.okAdd")}`}
-                                    {isSubmitting && (
-                                        <CircularProgress
-                                            size={24}
-                                            className={classes.buttonProgress}
-                                        />
-                                    )}
-                                </Button>
-                            </DialogActions>
-                        </Form>
-                    )}
-                </Formik>
-            </Dialog>
-        </div>
-    );
-};
+            <Grid item xs={12} sm={3}>
+              <TextField label="Máx. mensagens no histórico" type="number" fullWidth value={values.historyMessages}
+                onChange={e=>setValues({ ...values, historyMessages:Number(e.target.value) })}/>
+            </Grid>
+            {/* Se você tem seleção de Fila/Queue, mantenha aqui */}
+          </Grid>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={onClose}>Cancelar</Button>
+          <Button color="primary" variant="contained" onClick={handleSave}>
+            {promptId ? "Salvar" : "Adicionar"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
-export default PromptModal;
+      <PromptWizard
+        open={wizardOpen}
+        onClose={()=>setWizardOpen(false)}
+        onGenerated={handleGenerated}
+      />
+    </>
+  );
+}
