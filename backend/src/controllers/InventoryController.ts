@@ -9,7 +9,7 @@ import { runSearch } from "../services/InventoryServices/RunSearchService";
 export const createIntegration = async (req: Request, res: Response) => {
   const schema = Yup.object().shape({
     name: Yup.string().required(),
-    companyId: Yup.number().required(),
+    companyId: Yup.number().optional(),
     categoryHint: Yup.string().nullable(),
     endpoint: Yup.object({
       method: Yup.string().oneOf(["GET", "POST"]).required(),
@@ -36,7 +36,8 @@ export const createIntegration = async (req: Request, res: Response) => {
     throw new AppError(err.message);
   }
 
-  const integ = await InventoryIntegration.create(req.body);
+  const payload = { ...req.body, companyId: req.user.companyId };
+  const integ = await InventoryIntegration.create(payload);
   return res.status(201).json(integ);
 };
 

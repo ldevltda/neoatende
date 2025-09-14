@@ -11,7 +11,6 @@ const PAG_STRAT = ["none", "page", "offset", "cursor"];
 
 const initialState = {
   name: "",
-  companyId: "",
   categoryHint: "",
   endpoint: {
     method: "GET",
@@ -50,7 +49,6 @@ export default function IntegrationForm({ onCreated, token, selected, setSelecte
     if (selected) {
       const f = {
         name: selected.name || "",
-        companyId: selected.companyId || "",
         categoryHint: selected.categoryHint || "",
         endpoint: {
           method: selected.endpoint?.method || "GET",
@@ -125,9 +123,6 @@ export default function IntegrationForm({ onCreated, token, selected, setSelecte
       <Grid container spacing={2}>
         <Grid item xs={12} md={6}>
           <TextField label="Nome" value={form.name} onChange={handleChange("name")} fullWidth />
-        </Grid>
-        <Grid item xs={12} md={3}>
-          <TextField label="Company ID" value={form.companyId} onChange={handleChange("companyId")} fullWidth />
         </Grid>
         <Grid item xs={12} md={3}>
           <TextField label="Dica de Categoria" placeholder="imovel|carro|produto"
