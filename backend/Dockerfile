@@ -33,7 +33,7 @@ WORKDIR /fe
 
 COPY frontend/package.json frontend/package-lock.json ./
 ENV NPM_CONFIG_LEGACY_PEER_DEPS=true
-RUN npm ci
+RUN npm ci --legacy-peer-deps
 COPY frontend/ .
 # Se seu front é CRA, o build sai em /fe/build. (Se for Vite, ajuste para /fe/dist)
 RUN npm run build
