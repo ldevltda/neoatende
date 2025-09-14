@@ -40,6 +40,7 @@ import ForgetPassword from "../pages/ForgetPassWord/"; // Reset PassWd
 import CampaignsPhrase from "../pages/CampaignsPhrase";
 import FlowBuilder from "../pages/FlowBuilder";
 import FlowBuilderConfig from "../pages/FlowBuilderConfig";
+import InventoryIntegrationsPage from "../pages/inventory/InventoryIntegrationsPage";
 
 const Routes = () => {
   const [showCampaigns, setShowCampaigns] = useState(false);
@@ -94,6 +95,13 @@ const Routes = () => {
                 <Route exact path="/users" component={Users} isPrivate />
                 <Route exact path="/files" component={Files} isPrivate />
                 <Route exact path="/prompts" component={Prompts} isPrivate />
+                <Route
+                  exact
+                  path="/inventory"            // ou "/admin/inventory" se preferir
+                  component={InventoryIntegrationsPage}
+                  isPrivate
+                />
+
                 <Route
                   exact
                   path="/queue-integration"

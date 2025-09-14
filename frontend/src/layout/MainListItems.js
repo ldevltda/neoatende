@@ -490,6 +490,13 @@ const MainListItems = (props) => {
                 icon={<DeviceHubOutlined />}
               />
             )}
+            {showIntegrations && (
+              <ListItemLink
+                to="/inventory"            // alinhar com a rota acima
+                primary="Estoque (API)"
+                icon={<ListIcon />}        // já importado como ListIcon from "@material-ui/icons/ListAlt"
+              />
+            )}
             <ListItemLink
               to="/connections"
               primary={i18n.t("mainDrawer.listItems.connections")}

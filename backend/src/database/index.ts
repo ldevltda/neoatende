@@ -43,6 +43,7 @@ import { FlowBuilderModel } from "../models/FlowBuilder";
 import { FlowAudioModel } from "../models/FlowAudio";
 import { FlowCampaignModel } from "../models/FlowCampaign";
 import { FlowImgModel } from "../models/FlowImg";
+import InventoryIntegration from "../models/InventoryIntegration";
 
 // --- carrega o config e seleciona apenas a env atual ---
 type NodeEnv = "development" | "test" | "production";
@@ -106,7 +107,8 @@ const models = [
   FlowBuilderModel,
   FlowAudioModel,
   FlowCampaignModel,
-  FlowImgModel
+  FlowImgModel,
+  InventoryIntegration
 ];
 
 sequelize.addModels(models);
