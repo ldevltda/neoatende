@@ -48,7 +48,7 @@ import Setting from "../../models/Setting";
 import { cacheLayer } from "../../libs/cache";
 import { provider } from "./providers";
 import { debounce } from "../../helpers/Debounce";
-import { ChatCompletionRequestMessage, Configuration, OpenAIApi } from "openai";
+import OpenAI from "openai";
 import ffmpeg from "fluent-ffmpeg";
 import {
   SpeechConfig,
@@ -71,6 +71,8 @@ import { WebhookModel } from "../../models/Webhook";
 import {differenceInMilliseconds} from "date-fns";
 import Whatsapp from "../../models/Whatsapp";
 
+type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
+
 const request = require("request");
 
 const fs = require("fs");
@@ -80,8 +82,9 @@ type Session = WASocket & {
   store?: Store;
 };
 
-interface SessionOpenAi extends OpenAIApi {
+interface SessionOpenAi {
   id?: number;
+  client: OpenAI;
 }
 const sessionsOpenAi: SessionOpenAi[] = [];
 
@@ -692,14 +695,13 @@ const handleOpenAi = async (
   const openAiIndex = sessionsOpenAi.findIndex(s => s.id === wbot.id);
 
   if (openAiIndex === -1) {
-    const configuration = new Configuration({
-      apiKey: prompt.apiKey
-    });
-    openai = new OpenAIApi(configuration);
-    openai.id = wbot.id;
-    sessionsOpenAi.push(openai);
+    const client = new OpenAI({
+     apiKey: (prompt?.apiKey || process.env.OPENAI_API_KEY)!
+   });
+   openai = { id: wbot.id, client };
+   sessionsOpenAi.push(openai);
   } else {
-    openai = sessionsOpenAi[openAiIndex];
+   openai = sessionsOpenAi[openAiIndex];
   }
 
   let maxMessages = prompt.maxMessages;
@@ -717,7 +719,7 @@ const handleOpenAi = async (
   } tokens e cuide para não truncar o final.\nSempre que possível, mencione o nome dele para ser mais personalizado o atendimento e mais educado. Quando a resposta requer uma transferência para o setor de atendimento, comece sua resposta com 'Ação: Transferir para o setor de atendimento'.\n
   ${prompt.prompt}\n`;
 
-  let messagesOpenAi: ChatCompletionRequestMessage[] = [];
+  let messagesOpenAi: ChatMsg[] = [];
 
   if (msg.message?.conversation || msg.message?.extendedTextMessage?.text) {
     messagesOpenAi = [];
@@ -737,14 +739,14 @@ const handleOpenAi = async (
     }
     messagesOpenAi.push({ role: "user", content: bodyMessage! });
 
-    const chat = await openai.createChatCompletion({
-      model: prompt.model,
+    const chat = await openai.client.chat.completions.create({
+      model: prompt.model,                         // ex: "gpt-4o-mini"
       messages: messagesOpenAi,
-      max_tokens: prompt.maxTokens,
-      temperature: prompt.temperature
+      max_tokens: Number(prompt.maxTokens),
+      temperature: Number(prompt.temperature)
     });
-
-    let response = chat.data.choices[0].message?.content;
+    
+    let response = chat.choices?.[0]?.message?.content;
 
     if (response?.includes("Ação: Transferir para o setor de atendimento")) {
       await transferQueue(prompt.queueId, ticket, contact);
@@ -791,7 +793,10 @@ const handleOpenAi = async (
   } else if (msg.message?.audioMessage) {
     const mediaUrl = mediaSent!.mediaUrl!.split("/").pop();
     const file = fs.createReadStream(`${publicFolder}/${mediaUrl}`) as any;
-    const transcription = await openai.createTranscription(file, "whisper-1");
+    const transcription = await openai.client.audio.transcriptions.create({
+      file,
+      model: "whisper-1"
+    });
 
     messagesOpenAi = [];
     messagesOpenAi.push({ role: "system", content: promptSystem });
@@ -808,14 +813,14 @@ const handleOpenAi = async (
         }
       }
     }
-    messagesOpenAi.push({ role: "user", content: transcription.data.text });
-    const chat = await openai.createChatCompletion({
-      model: prompt.model,
+    messagesOpenAi.push({ role: "user", content: transcription.text });
+    const chat = await openai.client.chat.completions.create({
+      model: prompt.model,                         // ex: "gpt-4o-mini"
       messages: messagesOpenAi,
-      max_tokens: prompt.maxTokens,
-      temperature: prompt.temperature
+      max_tokens: Number(prompt.maxTokens),
+      temperature: Number(prompt.temperature)
     });
-    let response = chat.data.choices[0].message?.content;
+    let response = chat.choices?.[0]?.message?.content;
 
     if (response?.includes("Ação: Transferir para o setor de atendimento")) {
       await transferQueue(prompt.queueId, ticket, contact);
