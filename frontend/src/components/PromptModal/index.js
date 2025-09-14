@@ -1,4 +1,3 @@
-// frontend/src/components/PromptModal/index.js
 import React, { useEffect, useState } from "react";
 import {
   Dialog,
@@ -11,6 +10,8 @@ import {
   MenuItem,
 } from "@material-ui/core";
 import api from "../../services/api";
+import { toast } from "react-toastify";
+import toastError from "../../errors/toastError";
 import PromptWizard from "../prompt/PromptWizard";
 
 export default function PromptModal({ open, onClose, promptId, refreshPrompts }) {
@@ -25,7 +26,28 @@ export default function PromptModal({ open, onClose, promptId, refreshPrompts })
     queueId: "",
   });
 
+  const [queues, setQueues] = useState([]);
   const [wizardOpen, setWizardOpen] = useState(false);
+
+  // Carrega filas para permitir escolher uma (e já sugerir a primeira)
+  useEffect(() => {
+    async function loadQueues() {
+      try {
+        // ajuste a rota se no seu backend for /queues em vez de /queue
+        const { data } = await api.get("/queue");
+        const list = data?.queues || data || [];
+        setQueues(list);
+        // se estamos criando e não há fila definida, seta a primeira
+        if (open && !promptId && list.length && !values.queueId) {
+          setValues((prev) => ({ ...prev, queueId: list[0].id }));
+        }
+      } catch (e) {
+        // sem filas ou rota diferente — segue sem quebrar
+      }
+    }
+    if (open) loadQueues();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, promptId]);
 
   // Carrega prompt para edição
   useEffect(() => {
@@ -41,18 +63,19 @@ export default function PromptModal({ open, onClose, promptId, refreshPrompts })
           maxTokens: typeof data.maxTokens === "number" ? data.maxTokens : 100,
           historyMessages:
             typeof data.historyMessages === "number" ? data.historyMessages : 10,
-          queueId: data.queueId || "",
+          // backend costuma mandar queueId direto; se vier dentro de queue, usa queue.id
+          queueId: data.queueId || data.queue?.id || "",
         });
       } catch (e) {
-        // silencioso; o modal pode ser de criação
+        // modal pode ser de criação
       }
     }
 
     if (open && promptId) {
       load();
     }
-    // ao abrir para criar, zera os campos
     if (open && !promptId) {
+      // reset quando abrir para criar
       setValues({
         name: "",
         apiKey: "",
@@ -61,22 +84,40 @@ export default function PromptModal({ open, onClose, promptId, refreshPrompts })
         temperature: 1,
         maxTokens: 100,
         historyMessages: 10,
-        queueId: "",
+        queueId: "", // será preenchido pelo loadQueues se houver
       });
     }
   }, [open, promptId]);
 
   async function handleSave() {
-    if (promptId) {
-      await api.put(`/prompt/${promptId}`, values);
-    } else {
-      await api.post("/prompt", values);
-    }
-    if (typeof refreshPrompts === "function") {
-      await refreshPrompts();
-    }
-    if (typeof onClose === "function") {
-      onClose();
+    try {
+      if (!values.name?.trim()) {
+        toast.error("Informe o nome do prompt");
+        return;
+      }
+      if (!values.queueId) {
+        toast.error("Selecione uma fila para o prompt");
+        return;
+      }
+
+      const payload = { ...values };
+      if (promptId) {
+        await api.put(`/prompt/${promptId}`, payload);
+        toast.success("Prompt atualizado!");
+      } else {
+        await api.post("/prompt", payload);
+        toast.success("Prompt criado!");
+      }
+
+      if (typeof refreshPrompts === "function") {
+        await refreshPrompts();
+      }
+      if (typeof onClose === "function") {
+        onClose();
+      }
+    } catch (err) {
+      // agora você vê o erro real (ex.: queueId obrigatório, validação, etc.)
+      toastError(err);
     }
   }
 
@@ -116,6 +157,25 @@ export default function PromptModal({ open, onClose, promptId, refreshPrompts })
                 Gerar Prompt Inteligente
               </Button>
             </Grid>
+
+            {/* Seleção de fila (requerido pelo backend na maioria dos casos) */}
+            {queues.length > 0 && (
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  select
+                  label="Fila"
+                  fullWidth
+                  value={values.queueId}
+                  onChange={(e) => setValues({ ...values, queueId: e.target.value })}
+                >
+                  {queues.map((q) => (
+                    <MenuItem key={q.id} value={q.id}>
+                      {q.name}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              </Grid>
+            )}
 
             <Grid item xs={12}>
               <TextField
@@ -187,7 +247,6 @@ export default function PromptModal({ open, onClose, promptId, refreshPrompts })
                 }
               />
             </Grid>
-            {/* se existir seleção de fila/queue no seu modal original, mantenha aqui */}
           </Grid>
         </DialogContent>
 
@@ -208,5 +267,3 @@ export default function PromptModal({ open, onClose, promptId, refreshPrompts })
     </>
   );
 }
-
-//teste
