@@ -1,19 +1,17 @@
 import { Request, Response } from "express";
 import { z } from "zod";
-import { buildPrompt } from "../../services/prompt/BuildPrompt";
+import { fetchPublicContext } from "../../services/prompt/FetchPublicContext";
+import { generatePromptWithLlm } from "../../services/prompt/GeneratePromptWithLlm";
+import { buildPrompt } from "../../services/prompt/BuildPrompt"; // fallback
 
-const complianceSchema = z.object({
-  collectPII: z.boolean().optional(),
-  allowPricing: z.boolean().optional(),
-  allowMedical: z.boolean().optional(),
-  allowLegalAdvice: z.boolean().optional(),
-}).default({}); // default no objeto, sem defaults internos
-
-const channelHintsSchema = z.object({
-  whatsapp: z.boolean().optional(),
-  instagram: z.boolean().optional(),
-  webchat: z.boolean().optional(),
-}).default({}); // idem
+const complianceSchema = z
+  .object({
+    collectPII: z.boolean().optional(),
+    allowPricing: z.boolean().optional(),
+    allowMedical: z.boolean().optional(),
+    allowLegalAdvice: z.boolean().optional(),
+  })
+  .default({});
 
 const schema = z.object({
   businessName: z.string().min(1, "Informe o nome do negócio"),
@@ -27,15 +25,15 @@ const schema = z.object({
   typicalQuestions: z.array(z.string()).optional().default([]),
   goodAnswersExamples: z.array(z.string()).optional().default([]),
   language: z.string().optional().default("pt-BR"),
-  compliance: complianceSchema.optional(),     // objeto com default({})
-  channelHints: channelHintsSchema.optional(), // objeto com default({})
+  compliance: complianceSchema.optional(),
+  // removido channelHints
 });
 
-export const generatePromptController = (req: Request, res: Response) => {
+export const generatePromptController = async (req: Request, res: Response) => {
   try {
     const input = schema.parse(req.body);
 
-    // Normalização de defaults de negócio (fica 100% previsível)
+    // normalização de defaults
     const normalized = {
       ...input,
       compliance: {
@@ -45,16 +43,39 @@ export const generatePromptController = (req: Request, res: Response) => {
         allowLegalAdvice: false,
         ...(input.compliance || {}),
       },
-      channelHints: {
-        whatsapp: true,
-        instagram: false,
-        webchat: false,
-        ...(input.channelHints || {}),
-      },
     };
 
-    const result = buildPrompt(normalized);
-    return res.status(200).json(result);
+    // 1) coletar contexto público do site/redes (best-effort)
+    const webContext = await fetchPublicContext(normalized.siteUrl, normalized.socials);
+
+    // 2) gerar via OpenAI (se não houver OPENAI_API_KEY, cai no fallback)
+    let prompt: string;
+    try {
+      prompt = await generatePromptWithLlm(normalized, webContext);
+    } catch (e) {
+      // fallback determinístico
+      const fallback = buildPrompt({ ...normalized, channelHints: {} as any });
+      prompt = fallback.prompt;
+    }
+
+    const summary = `Agente ${normalized.segment} — ${normalized.businessName} | objetivo: ${normalized.mainGoal} | tom: ${normalized.tone}`;
+
+    return res.status(200).json({
+      prompt,
+      summary,
+      meta: {
+        businessName: normalized.businessName,
+        segment: normalized.segment,
+        mainGoal: normalized.mainGoal,
+        tone: normalized.tone,
+        siteUrl: normalized.siteUrl || null,
+        socials: normalized.socials || [],
+        language: normalized.language,
+        usedOpenAI: !!process.env.OPENAI_API_KEY,
+        webContextChars: webContext?.length || 0,
+        createdAt: new Date().toISOString(),
+      },
+    });
   } catch (err: any) {
     if (err?.issues) {
       return res.status(400).json({ error: "ValidationError", details: err.issues });

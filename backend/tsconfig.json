@@ -1,4 +1,3 @@
-// teste
 {
   "compilerOptions": {
     "target": "es2020",
@@ -19,7 +18,9 @@
     "forceConsistentCasingInFileNames": true,
 
     "experimentalDecorators": true,
-    "emitDecoratorMetadata": true
+    "emitDecoratorMetadata": true,
+
+    "allowSyntheticDefaultImports": true
   },
   "include": ["src"]
 }
