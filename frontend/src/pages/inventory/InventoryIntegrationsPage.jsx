@@ -1,6 +1,12 @@
 import React, { useEffect, useState } from "react";
 import {
-  Container, Grid, Paper, Typography, Divider, Button, CircularProgress
+  Container,
+  Grid,
+  Paper,
+  Typography,
+  Divider,
+  Button,
+  CircularProgress
 } from "@material-ui/core";
 import { makeStyles } from "@material-ui/core/styles";
 import IntegrationForm from "../../components/inventory/IntegrationForm";
@@ -23,18 +29,11 @@ const useStyles = makeStyles((theme) => ({
 
 export default function InventoryIntegrationsPage() {
   const classes = useStyles();
-  const { user } = useContext(AuthContext); // supõe que você já tem este contexto no projeto
-  const token = user?.token;
 
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(null);
   const [testOpen, setTestOpen] = useState(false);
-
-  // Carregar lista (se já tiver endpoint de GET você pode usar; aqui, como não criamos GET all,
-  // a página controla pelo estado local após criação. Se você quiser, crie um GET /inventory/integrations (opcional))
-  // Para o MVP, deixo lista controlada no estado e começando vazia.
-  // Dica: se quiser persistência, implemente um GET no backend similar ao create.
 
   const handleCreated = (created) => {
     setList((prev) => [created, ...prev]);
@@ -108,7 +107,7 @@ export default function InventoryIntegrationsPage() {
 
         <Grid item xs={12} md={8}>
           <Paper className={classes.paper}>
-            <IntegrationForm onCreated={handleCreated} token={token} selected={selected} setSelected={setSelected} />
+            <IntegrationForm onCreated={handleCreated} selected={selected} setSelected={setSelected} />
           </Paper>
         </Grid>
       </Grid>
