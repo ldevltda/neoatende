@@ -3,17 +3,10 @@ import React, { useState } from "react";
 import {
   Dialog, DialogTitle, DialogContent, DialogActions,
   Button, TextField, Grid, Chip, IconButton, Tooltip,
-  MenuItem, Typography, Box
+  Typography, Box
 } from "@material-ui/core";
 import { Add, Close } from "@material-ui/icons";
 import api from "../../services/api";
-
-const segments = [
-  { value: "imobiliaria", label: "Imobiliária" },
-  { value: "loja-de-veiculos", label: "Loja de Veículos" },
-  { value: "restaurante", label: "Restaurante" },
-  { value: "outros", label: "Outros" },
-];
 
 const tones = [
   { value: "acolhedor", label: "Acolhedor" },
@@ -25,9 +18,7 @@ const tones = [
 const StepHeader = ({ title, subtitle }) => (
   <Box mb={2}>
     <Typography variant="h6" style={{ fontWeight: 700 }}>{title}</Typography>
-    {subtitle ? (
-      <Typography variant="body2" color="textSecondary">{subtitle}</Typography>
-    ) : null}
+    {subtitle ? <Typography variant="body2" color="textSecondary">{subtitle}</Typography> : null}
   </Box>
 );
 
@@ -37,7 +28,7 @@ export default function PromptWizard({ open, onClose, onGenerated }) {
 
   const [form, setForm] = useState({
     businessName: "",
-    segment: "imobiliaria",
+    segment: "",              // << campo aberto
     mainGoal: "",
     tone: "consultivo",
     siteUrl: "",
@@ -57,11 +48,6 @@ export default function PromptWizard({ open, onClose, onGenerated }) {
       allowMedical: false,
       allowLegalAdvice: false,
     },
-    channelHints: {
-      whatsapp: true,
-      instagram: false,
-      webchat: false,
-    },
   });
 
   const addChip = (listKey, inputKey) => {
@@ -78,7 +64,7 @@ export default function PromptWizard({ open, onClose, onGenerated }) {
       title: "Sobre o negócio",
       content: (
         <Grid container spacing={2}>
-          <Grid item xs={12} sm={7}>
+          <Grid item xs={12} sm={6}>
             <TextField
               label="Nome do negócio"
               fullWidth
@@ -86,18 +72,14 @@ export default function PromptWizard({ open, onClose, onGenerated }) {
               onChange={e => setForm({ ...form, businessName: e.target.value })}
             />
           </Grid>
-          <Grid item xs={12} sm={5}>
+          <Grid item xs={12} sm={6}>
             <TextField
-              select
-              label="Segmento"
+              label="Segmento / Ramo"
+              placeholder="Ex.: Imobiliária, Estética, Clínica, Loja de Veículos..."
               fullWidth
               value={form.segment}
               onChange={e => setForm({ ...form, segment: e.target.value })}
-            >
-              {segments.map(s => (
-                <MenuItem key={s.value} value={s.value}>{s.label}</MenuItem>
-              ))}
-            </TextField>
+            />
           </Grid>
           <Grid item xs={12}>
             <TextField
@@ -124,141 +106,63 @@ export default function PromptWizard({ open, onClose, onGenerated }) {
               value={form.tone}
               onChange={e => setForm({ ...form, tone: e.target.value })}
             >
-              {tones.map(t => (
-                <MenuItem key={t.value} value={t.value}>{t.label}</MenuItem>
-              ))}
+              {tones.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
             </TextField>
           </Grid>
         </Grid>
       ),
     },
+
+    // REMOVIDO o bloco de "Canais"
     {
-      title: "Canais & Conformidade",
+      title: "Conformidade",
       content: (
         <Grid container spacing={2}>
           <Grid item xs={12}>
-            <StepHeader title="Canais" subtitle="Selecione onde o agente vai atuar" />
+            <StepHeader title="Regras de segurança e limites" />
             <Box display="flex" style={{ gap: 8 }} flexWrap="wrap">
               <Button
-                variant={form.channelHints.whatsapp ? "contained" : "outlined"}
-                onClick={() =>
-                  setForm(p => ({
-                    ...p,
-                    channelHints: { ...p.channelHints, whatsapp: !p.channelHints.whatsapp },
-                  }))
-                }
-              >
-                WhatsApp
-              </Button>
-              <Button
-                variant={form.channelHints.instagram ? "contained" : "outlined"}
-                onClick={() =>
-                  setForm(p => ({
-                    ...p,
-                    channelHints: { ...p.channelHints, instagram: !p.channelHints.instagram },
-                  }))
-                }
-              >
-                Instagram
-              </Button>
-              <Button
-                variant={form.channelHints.webchat ? "contained" : "outlined"}
-                onClick={() =>
-                  setForm(p => ({
-                    ...p,
-                    channelHints: { ...p.channelHints, webchat: !p.channelHints.webchat },
-                  }))
-                }
-              >
-                Webchat
-              </Button>
-            </Box>
-          </Grid>
-
-          <Grid item xs={12}>
-            <StepHeader title="Conformidade" subtitle="Regras de segurança e limites de resposta" />
-            <Box display="flex" style={{ gap: 8 }} flexWrap="wrap" mt={1}>
-              <Button
                 variant={form.compliance.allowPricing ? "contained" : "outlined"}
-                onClick={() =>
-                  setForm(p => ({
-                    ...p,
-                    compliance: { ...p.compliance, allowPricing: !p.compliance.allowPricing },
-                  }))
-                }
-              >
-                Pode falar de preço
-              </Button>
+                onClick={() => setForm(p => ({ ...p, compliance: { ...p.compliance, allowPricing: !p.compliance.allowPricing } }))}
+              >Pode falar de preço</Button>
               <Button
                 variant={form.compliance.allowLegalAdvice ? "contained" : "outlined"}
-                onClick={() =>
-                  setForm(p => ({
-                    ...p,
-                    compliance: {
-                      ...p.compliance,
-                      allowLegalAdvice: !p.compliance.allowLegalAdvice,
-                    },
-                  }))
-                }
-              >
-                Pode aconselhar juridicamente
-              </Button>
+                onClick={() => setForm(p => ({ ...p, compliance: { ...p.compliance, allowLegalAdvice: !p.compliance.allowLegalAdvice } }))}
+              >Pode aconselhar juridicamente</Button>
               <Button
                 variant={form.compliance.allowMedical ? "contained" : "outlined"}
-                onClick={() =>
-                  setForm(p => ({
-                    ...p,
-                    compliance: { ...p.compliance, allowMedical: !p.compliance.allowMedical },
-                  }))
-                }
-              >
-                Pode aconselhar saúde
-              </Button>
+                onClick={() => setForm(p => ({ ...p, compliance: { ...p.compliance, allowMedical: !p.compliance.allowMedical } }))}
+              >Pode aconselhar saúde</Button>
               <Button
                 variant={form.compliance.collectPII ? "contained" : "outlined"}
-                onClick={() =>
-                  setForm(p => ({
-                    ...p,
-                    compliance: { ...p.compliance, collectPII: !p.compliance.collectPII },
-                  }))
-                }
-              >
-                Pode coletar dados pessoais
-              </Button>
+                onClick={() => setForm(p => ({ ...p, compliance: { ...p.compliance, collectPII: !p.compliance.collectPII } }))}
+              >Pode coletar dados pessoais</Button>
             </Box>
           </Grid>
         </Grid>
       ),
     },
+
     {
       title: "Fontes & Observações",
       content: (
         <Grid container spacing={2}>
           <Grid item xs={12}>
             <TextField
-              label="Redes sociais (uma por vez)"
+              label="Redes sociais (adicione uma por vez)"
               placeholder="https://instagram.com/minhaempresa"
               fullWidth
               value={form.socialsInput}
               onChange={e => setForm({ ...form, socialsInput: e.target.value })}
               InputProps={{
                 endAdornment: (
-                  <Tooltip title="Adicionar">
-                    <IconButton onClick={() => addChip("socials", "socialsInput")}>
-                      <Add />
-                    </IconButton>
-                  </Tooltip>
+                  <Tooltip title="Adicionar"><IconButton onClick={() => addChip("socials", "socialsInput")}><Add/></IconButton></Tooltip>
                 ),
               }}
             />
             <Box mt={1}>
               {form.socials.map((s, i) => (
-                <Chip
-                  key={i}
-                  label={s}
-                  onDelete={() => removeChip("socials", i)}
-                  style={{ marginRight: 6, marginBottom: 6 }}
-                />
+                <Chip key={i} label={s} onDelete={() => removeChip("socials", i)} style={{ marginRight: 6, marginBottom: 6 }} />
               ))}
             </Box>
           </Grid>
@@ -275,6 +179,7 @@ export default function PromptWizard({ open, onClose, onGenerated }) {
         </Grid>
       ),
     },
+
     {
       title: "Limites & Perguntas típicas",
       content: (
@@ -282,58 +187,35 @@ export default function PromptWizard({ open, onClose, onGenerated }) {
           <Grid item xs={12}>
             <TextField
               label="Coisas que NÃO deve responder (uma por vez)"
-              placeholder="Política, religião, assuntos fora do negócio..."
               fullWidth
               value={form.doNotsInput}
               onChange={e => setForm({ ...form, doNotsInput: e.target.value })}
-              InputProps={{
-                endAdornment: (
-                  <IconButton onClick={() => addChip("doNots", "doNotsInput")}>
-                    <Add />
-                  </IconButton>
-                ),
-              }}
+              InputProps={{ endAdornment: (<IconButton onClick={() => addChip("doNots", "doNotsInput")}><Add/></IconButton>) }}
             />
             <Box mt={1}>
               {form.doNots.map((s, i) => (
-                <Chip
-                  key={i}
-                  label={s}
-                  onDelete={() => removeChip("doNots", i)}
-                  style={{ marginRight: 6, marginBottom: 6 }}
-                />
+                <Chip key={i} label={s} onDelete={() => removeChip("doNots", i)} style={{ marginRight: 6, marginBottom: 6 }} />
               ))}
             </Box>
           </Grid>
           <Grid item xs={12}>
             <TextField
               label="Perguntas típicas dos clientes (uma por vez)"
-              placeholder="Preço? Disponibilidade? Localização? Prazos?"
               fullWidth
               value={form.typicalQuestionInput}
               onChange={e => setForm({ ...form, typicalQuestionInput: e.target.value })}
-              InputProps={{
-                endAdornment: (
-                  <IconButton onClick={() => addChip("typicalQuestions", "typicalQuestionInput")}>
-                    <Add />
-                  </IconButton>
-                ),
-              }}
+              InputProps={{ endAdornment: (<IconButton onClick={() => addChip("typicalQuestions", "typicalQuestionInput")}><Add/></IconButton>) }}
             />
             <Box mt={1}>
               {form.typicalQuestions.map((s, i) => (
-                <Chip
-                  key={i}
-                  label={s}
-                  onDelete={() => removeChip("typicalQuestions", i)}
-                  style={{ marginRight: 6, marginBottom: 6 }}
-                />
+                <Chip key={i} label={s} onDelete={() => removeChip("typicalQuestions", i)} style={{ marginRight: 6, marginBottom: 6 }} />
               ))}
             </Box>
           </Grid>
         </Grid>
       ),
     },
+
     {
       title: "Exemplos de boas respostas",
       content: (
@@ -341,26 +223,14 @@ export default function PromptWizard({ open, onClose, onGenerated }) {
           <Grid item xs={12}>
             <TextField
               label="Cole um exemplo (uma por vez)"
-              placeholder='Ex.: "Olá! Posso te mostrar opções dentro da sua faixa de valor. Você prefere Campinas ou Kobrasol?"'
               fullWidth
               value={form.goodAnswerInput}
               onChange={e => setForm({ ...form, goodAnswerInput: e.target.value })}
-              InputProps={{
-                endAdornment: (
-                  <IconButton onClick={() => addChip("goodAnswersExamples", "goodAnswerInput")}>
-                    <Add />
-                  </IconButton>
-                ),
-              }}
+              InputProps={{ endAdornment: (<IconButton onClick={() => addChip("goodAnswersExamples", "goodAnswerInput")}><Add/></IconButton>) }}
             />
             <Box mt={1}>
               {form.goodAnswersExamples.map((s, i) => (
-                <Chip
-                  key={i}
-                  label={s}
-                  onDelete={() => removeChip("goodAnswersExamples", i)}
-                  style={{ marginRight: 6, marginBottom: 6 }}
-                />
+                <Chip key={i} label={s} onDelete={() => removeChip("goodAnswersExamples", i)} style={{ marginRight: 6, marginBottom: 6 }} />
               ))}
             </Box>
           </Grid>
@@ -369,13 +239,8 @@ export default function PromptWizard({ open, onClose, onGenerated }) {
     },
   ];
 
-  const handleNext = () => {
-    const last = steps.length - 1;
-    setStep(s => (s < last ? s + 1 : last));
-  };
-  const handlePrev = () => {
-    setStep(s => (s > 0 ? s - 1 : 0));
-  };
+  const handleNext = () => setStep(s => Math.min(s + 1, steps.length - 1));
+  const handlePrev = () => setStep(s => Math.max(s - 1, 0));
 
   const handleGenerate = async () => {
     setLoading(true);
@@ -393,24 +258,24 @@ export default function PromptWizard({ open, onClose, onGenerated }) {
         goodAnswersExamples: form.goodAnswersExamples,
         language: "pt-BR",
         compliance: form.compliance,
-        channelHints: form.channelHints,
+        // sem channelHints
       };
       const { data } = await api.post("/openai/prompts/generate", payload);
-      if (onGenerated) onGenerated(data); // { prompt, summary, meta }
+      if (onGenerated) onGenerated(data);
       if (onClose) onClose();
     } finally {
       setLoading(false);
     }
   };
 
-  const isLastStep = step >= steps.length - 1;
+  const isLast = step >= steps.length - 1;
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
       <DialogTitle>
         Gerar Prompt Inteligente
         <IconButton onClick={onClose} style={{ position: "absolute", right: 8, top: 8 }}>
-          <Close />
+          <Close/>
         </IconButton>
       </DialogTitle>
       <DialogContent dividers>
@@ -421,14 +286,9 @@ export default function PromptWizard({ open, onClose, onGenerated }) {
         {steps[step].content}
       </DialogContent>
       <DialogActions>
-        <Button onClick={handlePrev} disabled={step === 0}>
-          Voltar
-        </Button>
-
-        {!isLastStep ? (
-          <Button color="primary" variant="contained" onClick={handleNext}>
-            Continuar
-          </Button>
+        <Button onClick={handlePrev} disabled={step === 0}>Voltar</Button>
+        {!isLast ? (
+          <Button color="primary" variant="contained" onClick={handleNext}>Continuar</Button>
         ) : (
           <Button color="primary" variant="contained" onClick={handleGenerate} disabled={loading}>
             {loading ? "Gerando..." : "Gerar Prompt"}

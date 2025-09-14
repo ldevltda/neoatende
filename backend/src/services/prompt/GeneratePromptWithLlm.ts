@@ -83,3 +83,4 @@ Inclua:
   const prompt = (completion.choices?.[0]?.message?.content || "").trim();
   return prompt;
 }
+//teste
