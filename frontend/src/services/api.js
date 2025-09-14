@@ -16,4 +16,24 @@ export const api = axios.create({
 
 export const openApi = axios.create({ baseURL });
 
+// 🔑 Interceptor para garantir token válido (ou nenhum)
+api.interceptors.request.use(
+  async config => {
+    const token = localStorage.getItem("token") || window?.token;
+
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    } else {
+      // remove Authorization se não existir token
+      if (config.headers && "Authorization" in config.headers) {
+        delete config.headers.Authorization;
+      }
+    }
+
+    config.withCredentials = true;
+    return config;
+  },
+  error => Promise.reject(error)
+);
+
 export default api;
