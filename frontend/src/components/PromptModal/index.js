@@ -62,7 +62,9 @@ export default function PromptModal({ open, onClose, promptId, refreshPrompts })
           temperature: typeof data.temperature === "number" ? data.temperature : 1,
           maxTokens: typeof data.maxTokens === "number" ? data.maxTokens : 100,
           historyMessages:
-            typeof data.historyMessages === "number" ? data.historyMessages : 10,
+             typeof data.maxMessages === "number"
+               ? data.maxMessages
+               : (typeof data.historyMessages === "number" ? data.historyMessages : 10),
           // backend costuma mandar queueId direto; se vier dentro de queue, usa queue.id
           queueId: data.queueId || data.queue?.id || "",
         });
@@ -99,8 +101,14 @@ export default function PromptModal({ open, onClose, promptId, refreshPrompts })
         toast.error("Selecione uma fila para o prompt");
         return;
       }
-
-      const payload = { ...values };
+      const payload = {
+        ...values,
+        maxMessages: Number(values.historyMessages), // << exigido pelo backend
+        maxTokens: Number(values.maxTokens),
+        temperature: Number(values.temperature),
+        queueId: Number(values.queueId),
+      };
+      delete payload.historyMessages; // não enviar a chave antiga
       if (promptId) {
         await api.put(`/prompt/${promptId}`, payload);
         toast.success("Prompt atualizado!");
