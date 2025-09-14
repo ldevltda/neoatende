@@ -1,9 +1,5 @@
-import axios from "axios";
-
-const api = axios.create({
-  baseURL: process.env.REACT_APP_BACKEND_URL || "/",
-  withCredentials: true
-});
+// frontend/src/services/inventoryApi.js
+import api from "./api"; // usa o axios global JÁ autenticado
 
 // Helpers
 export const safeParse = (txt, fallback = {}) => {
@@ -24,31 +20,23 @@ export const safeStringify = (obj) => {
 };
 
 // CRUD
-export async function createIntegration(payload, token) {
-  const { data } = await api.post("/inventory/integrations", payload, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
+export async function createIntegration(payload) {
+  const { data } = await api.post("/inventory/integrations", payload);
   return data;
 }
 
-export async function inferIntegration(id, token) {
-  const { data } = await api.post(`/inventory/integrations/${id}/infer`, {}, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
+export async function inferIntegration(id) {
+  const { data } = await api.post(`/inventory/integrations/${id}/infer`, {});
   return data;
 }
 
-export async function guidedFix(id, fixes, token) {
-  const { data } = await api.post(`/inventory/integrations/${id}/guided-fix`, fixes, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
+export async function guidedFix(id, fixes) {
+  const { data } = await api.post(`/inventory/integrations/${id}/guided-fix`, fixes);
   return data;
 }
 
-export async function searchInventory(id, body, token) {
-  const { data } = await api.post(`/inventory/integrations/${id}/search`, body, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
+export async function searchInventory(id, body) {
+  const { data } = await api.post(`/inventory/integrations/${id}/search`, body);
   return data;
 }
 

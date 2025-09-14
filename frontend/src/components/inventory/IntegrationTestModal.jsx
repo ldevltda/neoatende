@@ -5,7 +5,7 @@ import {
 } from "@material-ui/core";
 import { searchInventory, safeParse, safeStringify } from "../../services/inventoryApi";
 
-export default function IntegrationTestModal({ open, onClose, integration, token }) {
+export default function IntegrationTestModal({ open, onClose, integration}) {
   const [text, setText] = useState("");
   const [filters, setFilters] = useState("{}");
   const [page, setPage] = useState(1);
@@ -23,7 +23,7 @@ export default function IntegrationTestModal({ open, onClose, integration, token
         filtros: safeParse(filters, {}),
         paginacao: { page: Number(page), pageSize: Number(pageSize) }
       };
-      const data = await searchInventory(integration.id, body, token);
+      const data = await searchInventory(integration.id, body);
       setResult(data);
     } finally {
       setLoading(false);

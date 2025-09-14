@@ -39,7 +39,7 @@ const initialState = {
   }
 };
 
-export default function IntegrationForm({ onCreated, token, selected, setSelected }) {
+export default function IntegrationForm({ onCreated, selected, setSelected }) {
   const [form, setForm] = useState(initialState);
   const [jsonQuery, setJsonQuery] = useState("{}");
   const [jsonBody, setJsonBody] = useState("{}");
@@ -110,7 +110,7 @@ export default function IntegrationForm({ onCreated, token, selected, setSelecte
         headers: safeParse(jsonHeaders, {})
       }
     };
-    const created = await createIntegration(payload, token);
+    const created = await createIntegration(payload);
     onCreated(created);
     setSelected(created);
   };

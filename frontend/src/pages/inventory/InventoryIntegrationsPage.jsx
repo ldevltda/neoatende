@@ -1,12 +1,11 @@
-import React, { useEffect, useState, useContext } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Container, Grid, Paper, Typography, Divider, Button, CircularProgress
 } from "@material-ui/core";
 import { makeStyles } from "@material-ui/core/styles";
 import IntegrationForm from "../../components/inventory/IntegrationForm";
 import IntegrationTestModal from "../../components/inventory/IntegrationTestModal";
-import api from "../../services/inventoryApi";
-import { AuthContext } from "../../context/Auth/AuthContext";
+import { inferIntegration } from "../../services/inventoryApi";
 
 const useStyles = makeStyles((theme) => ({
   root: { paddingTop: theme.spacing(3), paddingBottom: theme.spacing(3) },
@@ -46,11 +45,8 @@ export default function InventoryIntegrationsPage() {
     if (!selected?.id) return;
     setLoading(true);
     try {
-      const { data } = await api.post(`/inventory/integrations/${selected.id}/infer`, {}, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const data = await inferIntegration(selected.id);
       setSelected(data);
-      // substitui na lista
       setList((prev) => prev.map((i) => (i.id === data.id ? data : i)));
     } finally {
       setLoading(false);
@@ -121,7 +117,6 @@ export default function InventoryIntegrationsPage() {
         open={testOpen}
         onClose={() => setTestOpen(false)}
         integration={selected}
-        token={token}
       />
     </Container>
   );
