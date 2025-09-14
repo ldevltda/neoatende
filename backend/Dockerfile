@@ -12,7 +12,8 @@ RUN git config --global url."https://".insteadOf ssh://
 
 # Instala deps do backend
 COPY backend/package.json backend/package-lock.json ./
-RUN npm ci
+ENV NPM_CONFIG_LEGACY_PEER_DEPS=true
+RUN npm ci --legacy-peer-deps
 
 # Copia código do backend
 COPY backend/ .
@@ -32,8 +33,7 @@ FROM node:20-alpine AS fe
 WORKDIR /fe
 
 COPY frontend/package.json frontend/package-lock.json ./
-ENV NPM_CONFIG_LEGACY_PEER_DEPS=true
-RUN npm ci --legacy-peer-deps
+RUN npm ci
 COPY frontend/ .
 # Se seu front é CRA, o build sai em /fe/build. (Se for Vite, ajuste para /fe/dist)
 RUN npm run build
