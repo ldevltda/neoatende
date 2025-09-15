@@ -101,19 +101,31 @@ export default function IntegrationForm({ onCreated, selected, setSelected }) {
   };
 
   const handleCreate = async () => {
+    const fallbackStrategy = form.pagination?.strategy || "page";
+
     const payload = {
-      ...form,
-      endpoint: {
+        ...form,
+        pagination: {
+        ...form.pagination,
+        strategy: fallbackStrategy
+        },
+        endpoint: {
         ...form.endpoint,
         default_query: safeParse(jsonQuery, {}),
         default_body: safeParse(jsonBody, {}),
         headers: safeParse(jsonHeaders, {})
-      }
+        }
     };
+
+    if (!payload.endpoint?.url) {
+        alert("Informe a URL do Endpoint.");
+        return;
+    }
+
     const created = await createIntegration(payload);
     onCreated(created);
     setSelected(created);
-  };
+    };
 
   return (
     <>
