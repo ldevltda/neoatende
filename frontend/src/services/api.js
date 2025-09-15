@@ -1,23 +1,51 @@
-// src/services/api.js
-import axios from "axios";
+// frontend/src/services/inventoryApi.js
+import api from "./api"; // usa o axios global JÁ autenticado
 
-const isDev = process.env.NODE_ENV === "development";
+// Helpers
+export const safeParse = (txt, fallback = {}) => {
+  try {
+    if (typeof txt === "object") return txt;
+    if (!txt || !String(txt).trim()) return fallback;
+    return JSON.parse(txt);
+  } catch {
+    return fallback;
+  }
+};
+export const safeStringify = (obj) => {
+  try {
+    return JSON.stringify(obj ?? {}, null, 2);
+  } catch {
+    return "{}";
+  }
+};
 
-// DEV: usa REACT_APP_DEV_API_URL ou localhost:8080
-// PROD: usa REACT_APP_API_URL ou a própria origem (caso haja reverse proxy)
-const baseURL = isDev
-  ? (process.env.REACT_APP_DEV_API_URL || "http://localhost:8080")
-  : (process.env.REACT_APP_API_URL || window.location.origin);
-
-export const api = axios.create({
-  baseURL,
-  withCredentials: true,
-});
-
-export const openApi = axios.create({ baseURL });
-
+// 🔹 GET – lista integrações persistidas (por company do usuário)
 export async function listIntegrations() {
   const { data } = await api.get("/inventory/integrations");
+  return data;
+}
+
+// 🔹 POST – cria integração
+export async function createIntegration(payload) {
+  const { data } = await api.post("/inventory/integrations", payload);
+  return data;
+}
+
+// 🔹 POST – IA infere schema
+export async function inferIntegration(id) {
+  const { data } = await api.post(`/inventory/integrations/${id}/infer`, {});
+  return data;
+}
+
+// 🔹 POST – ajustes guiados (opcional)
+export async function guidedFix(id, fixes) {
+  const { data } = await api.post(`/inventory/integrations/${id}/guided-fix`, fixes);
+  return data;
+}
+
+// 🔹 POST – testar busca universal
+export async function searchInventory(id, body) {
+  const { data } = await api.post(`/inventory/integrations/${id}/search`, body);
   return data;
 }
 
