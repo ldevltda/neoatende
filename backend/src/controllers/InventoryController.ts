@@ -10,7 +10,8 @@ import { runSearch } from "../services/InventoryServices/RunSearchService";
  * Schema flexível:
  * - auth é OPCIONAL (default: { type: "none", in: "header" })
  * - pagination é OPCIONAL (default: strategy "none")
- * - endpoint.default_* e headers aceitam qualquer valor e defaultam p/ {}
+ * - endpoint.url aceita URL crua (com JSON no query); checamos só http/https
+ * - endpoint.default_* e headers defaultam para {}
  */
 const createSchema = Yup.object({
   name: Yup.string().required(),
@@ -20,7 +21,12 @@ const createSchema = Yup.object({
 
   endpoint: Yup.object({
     method: Yup.mixed<"GET" | "POST">().oneOf(["GET", "POST"]).required(),
-    url: Yup.string().url().required(),
+    // ⬇️ aceitar URL crua: só exige http/https
+    url: Yup.string()
+      .required("endpoint.url é obrigatório")
+      .test("httpish", "endpoint.url deve iniciar com http:// ou https://", v =>
+        typeof v === "string" && /^https?:\/\//i.test(v.trim())
+      ),
     default_query: Yup.mixed().default({}),
     default_body: Yup.mixed().default({}),
     headers: Yup.mixed().default({}),
@@ -62,12 +68,13 @@ const createSchema = Yup.object({
 });
 
 export const createIntegration = async (req: Request, res: Response) => {
-  // Aplica defaults antes de validar
-  const casted = createSchema.cast(req.body);
+  const casted = createSchema.cast(req.body); // aplica defaults
   try {
-    await createSchema.validate(casted, { abortEarly: false });
+    await createSchema.validate(casted, { abortEarly: false, strict: false });
   } catch (err: any) {
-    throw new AppError(err.message, 400);
+    // retorna a lista de erros do Yup para facilitar debug
+    const msg = Array.isArray(err?.errors) ? err.errors.join(" | ") : String(err?.message || err);
+    throw new AppError(msg, 400);
   }
 
   const payload = { ...casted, companyId: (req as any).user.companyId };
@@ -82,11 +89,9 @@ export const inferIntegration = async (req: Request, res: Response) => {
 
   const { samples, inferred } = await fetchSamplesAndInfer(integ);
   const rolemap = ensureRolemap(integ, samples?.[0]);
-
   integ.schema = inferred;
   integ.rolemap = rolemap;
   await integ.save();
-
   return res.json(integ);
 };
 
