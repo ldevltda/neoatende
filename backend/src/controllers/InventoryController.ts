@@ -6,37 +6,71 @@ import { fetchSamplesAndInfer } from "../services/InventoryServices/InferSchemaS
 import { ensureRolemap } from "../services/InventoryServices/RoleMapperService";
 import { runSearch } from "../services/InventoryServices/RunSearchService";
 
-export const createIntegration = async (req: Request, res: Response) => {
-  const schema = Yup.object().shape({
-    name: Yup.string().required(),
-    companyId: Yup.number().optional(),
-    categoryHint: Yup.string().nullable(),
-    endpoint: Yup.object({
-      method: Yup.string().oneOf(["GET", "POST"]).required(),
-      url: Yup.string().url().required(),
-      default_query: Yup.object().optional(),
-      default_body: Yup.object().optional(),
-      headers: Yup.object().optional(),
-      timeout_s: Yup.number().optional()
-    }).required(),
-    auth: Yup.object().required(),
-    pagination: Yup.object({
-      strategy: Yup.string().oneOf(["none","page","offset","cursor"]).required(),
-      page_param: Yup.string().optional(),
-      size_param: Yup.string().optional(),
-      offset_param: Yup.string().optional(),
-      cursor_param: Yup.string().optional(),
-      page_size_default: Yup.number().optional()
-    }).required()
-  });
+/**
+ * Schema “flexível”:
+ * - auth é OPCIONAL e defaulta para { type: "none", in: "header" }
+ * - pagination é OPCIONAL e defaulta para { strategy: "none", ... }
+ * - endpoint.default_* e headers aceitam qualquer coisa (fazemos cast p/ objeto)
+ */
+const createSchema = Yup.object({
+  name: Yup.string().required(),
+  companyId: Yup.number().optional(),
 
+  categoryHint: Yup.string().nullable(),
+
+  endpoint: Yup.object({
+    method: Yup.mixed<"GET" | "POST">().oneOf(["GET", "POST"]).required(),
+    url: Yup.string().url().required(),
+    default_query: Yup.mixed().default({}),
+    default_body: Yup.mixed().default({}),
+    headers: Yup.mixed().default({}),
+    timeout_s: Yup.number().default(8)
+  }).required(),
+
+  auth: Yup.object({
+    type: Yup.mixed<"none" | "api_key" | "bearer" | "basic">()
+      .oneOf(["none", "api_key", "bearer", "basic"])
+      .default("none"),
+    in: Yup.mixed<"header" | "query">().oneOf(["header", "query"]).default("header"),
+    name: Yup.string().default(""),
+    prefix: Yup.string().default(""),
+    key: Yup.string().default(""),
+    username: Yup.string().default(""),
+    password: Yup.string().default("")
+  }).default({ type: "none", in: "header" }),
+
+  pagination: Yup.object({
+    strategy: Yup.mixed<"none" | "page" | "offset" | "cursor">()
+      .oneOf(["none", "page", "offset", "cursor"])
+      .default("none"),
+    page_param: Yup.string().default("page"),
+    size_param: Yup.string().default("limit"),
+    offset_param: Yup.string().default("offset"),
+    cursor_param: Yup.string().default(""),
+    page_size_default: Yup.number().default(20)
+  }).default({
+    strategy: "none",
+    page_param: "page",
+    size_param: "limit",
+    offset_param: "offset",
+    cursor_param: "",
+    page_size_default: 20
+  }),
+
+  schema: Yup.mixed().optional(),
+  rolemap: Yup.mixed().optional()
+});
+
+export const createIntegration = async (req: Request, res: Response) => {
+  // aplica defaults antes de validar (não depender do front)
+  const casted = createSchema.cast(req.body);
   try {
-    await schema.validate(req.body);
+    await createSchema.validate(casted, { abortEarly: false });
   } catch (err: any) {
-    throw new AppError(err.message);
+    throw new AppError(err.message, 400);
   }
 
-  const payload = { ...req.body, companyId: req.user.companyId };
+  const payload = { ...casted, companyId: (req as any).user.companyId };
   const integ = await InventoryIntegration.create(payload);
   return res.status(201).json(integ);
 };
