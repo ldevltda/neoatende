@@ -16,4 +16,9 @@ export const api = axios.create({
 
 export const openApi = axios.create({ baseURL });
 
+export async function listIntegrations() {
+  const { data } = await api.get("/inventory/integrations");
+  return data;
+}
+
 export default api;

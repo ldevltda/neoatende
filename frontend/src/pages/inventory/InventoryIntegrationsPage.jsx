@@ -11,7 +11,7 @@ import {
 import { makeStyles } from "@material-ui/core/styles";
 import IntegrationForm from "../../components/inventory/IntegrationForm";
 import IntegrationTestModal from "../../components/inventory/IntegrationTestModal";
-import { inferIntegration } from "../../services/inventoryApi";
+import { inferIntegration, listIntegrations } from "../../services/inventoryApi";
 
 const useStyles = makeStyles((theme) => ({
   root: { paddingTop: theme.spacing(3), paddingBottom: theme.spacing(3) },
@@ -34,6 +34,18 @@ export default function InventoryIntegrationsPage() {
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(null);
   const [testOpen, setTestOpen] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const rows = await listIntegrations();
+        setList(rows || []);
+      } catch (e) {
+        // opcional: snackbar/log
+        // console.error(e);
+      }
+    })();
+  }, []);
 
   const handleCreated = (created) => {
     setList((prev) => [created, ...prev]);

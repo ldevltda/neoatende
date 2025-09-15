@@ -124,7 +124,7 @@ export default function IntegrationForm({ onCreated, selected, setSelected }) {
         <Grid item xs={12} md={6}>
           <TextField label="Nome" value={form.name} onChange={handleChange("name")} fullWidth />
         </Grid>
-        <Grid item xs={12} md={3}>
+        <Grid item xs={12} md={6}>
           <TextField label="Dica de Categoria" placeholder="imovel|carro|produto"
             value={form.categoryHint} onChange={handleChange("categoryHint")} fullWidth />
         </Grid>

@@ -4,12 +4,13 @@ import {
   createIntegration,
   inferIntegration,
   guidedFix,
-  searchInventory
+  searchInventory,
+  listIntegrations // ← ADD
 } from "../controllers/InventoryController";
 
 const routes = Router();
 
-// Todas protegidas – ajusta conforme necessidade
+routes.get("/inventory/integrations", isAuth, listIntegrations); // ← ADD
 routes.post("/inventory/integrations", isAuth, createIntegration);
 routes.post("/inventory/integrations/:id/infer", isAuth, inferIntegration);
 routes.post("/inventory/integrations/:id/guided-fix", isAuth, guidedFix);

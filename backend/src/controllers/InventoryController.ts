@@ -93,3 +93,12 @@ export const searchInventory = async (req: Request, res: Response) => {
   const result = await runSearch(integ, req.body || {});
   return res.json(result);
 };
+
+export const listIntegrations = async (req: Request, res: Response) => {
+  const companyId = (req as any).user.companyId;
+  const rows = await InventoryIntegration.findAll({
+    where: { companyId },
+    order: [["id", "DESC"]]
+  });
+  return res.json(rows);
+};
