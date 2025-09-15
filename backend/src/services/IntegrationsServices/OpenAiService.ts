@@ -1,3 +1,4 @@
+// backend/src/services/IntegrationsServices/OpenAiService.ts
 import { MessageUpsertType, proto, WASocket } from "baileys";
 import {
   convertTextToSpeechAndSaveToFile,
@@ -8,37 +9,27 @@ import {
   verifyMessage
 } from "../WbotServices/wbotMessageListener";
 
-import { isNil, isNull } from "lodash";
-
 import fs from "fs";
-import path, { join } from "path";
+import path from "path";
 
-import OpenAI, {Configuration, OpenAIApi} from "openai";
+import OpenAI from "openai";
 import Ticket from "../../models/Ticket";
 import Contact from "../../models/Contact";
 import Message from "../../models/Message";
 import TicketTraking from "../../models/TicketTraking";
-import ShowWhatsAppService from "../WhatsappService/ShowWhatsAppService";
-import Whatsapp from "../../models/Whatsapp";
 import { logger } from "../../utils/logger";
+
+// Integrações (Inventory)
+import { resolveByIntent } from "../InventoryServices/ResolveIntegrationService";
+import InventoryIntegration from "../../models/InventoryIntegration";
+import { buildParamsForApi } from "../InventoryServices/PlannerService";
+import { runSearch } from "../InventoryServices/RunSearchService";
 
 type Session = WASocket & {
   id?: number;
 };
 
-interface ImessageUpsert {
-  messages: proto.IWebMessageInfo[];
-  type: MessageUpsertType;
-}
-
-interface IMe {
-  name: string;
-  id: string;
-}
-
-interface SessionOpenAi extends OpenAIApi {
-  id?: number;
-}
+type SessionOpenAi = OpenAI & { id?: number };
 const sessionsOpenAi: SessionOpenAi[] = [];
 
 interface IOpenAi {
@@ -52,21 +43,109 @@ interface IOpenAi {
   apiKey: string;
   queueId: number;
   maxMessages: number;
+  model?: string; // opcional: cada cliente pode escolher modelo
 }
 
-const deleteFileSync = (path: string): void => {
+const deleteFileSync = (p: string): void => {
   try {
-    fs.unlinkSync(path);
+    fs.unlinkSync(p);
   } catch (error) {
     console.error("Erro ao deletar o arquivo:", error);
   }
 };
 
 const sanitizeName = (name: string): string => {
-  let sanitized = name.split(" ")[0];
+  let sanitized = (name || "").split(" ")[0];
   sanitized = sanitized.replace(/[^a-zA-Z0-9]/g, "");
   return sanitized.substring(0, 60);
 };
+
+// ---------- Helpers de disponibilidade via Inventory ----------
+function isAvailabilityQuestion(text: string) {
+  const t = (text || "").toLowerCase();
+  return (
+    /dispon[ií]vel/.test(t) ||
+    /ainda tem/.test(t) ||
+    /est[aá]\s+(a[ií]nda\s+)?dispon/.test(t) ||
+    /esse im[óo]vel/.test(t)
+  );
+}
+
+async function tryHandleAvailabilityByInventory(text: string, companyId: number) {
+  if (!isAvailabilityQuestion(text)) return null;
+
+  const pick = await resolveByIntent(text, companyId);
+  if (!pick) return null;
+
+  const integ = await InventoryIntegration.findByPk(pick.id);
+  if (!integ) return null;
+
+  const page = 1;
+  const pageSize = 5;
+
+  const planned = buildParamsForApi(
+    { text, filtros: {}, paginacao: { page, pageSize } },
+    (integ as any).pagination
+  );
+
+  const params = (planned && (planned as any).params) || {};
+  const result = await runSearch(integ as any, {
+    params,
+    page,
+    pageSize,
+    text,
+    filtros: {}
+  } as any);
+
+  const items = Array.isArray(result?.items) ? result.items : [];
+  if (!items.length) {
+    return {
+      handled: true,
+      reply:
+        "Não encontrei imóveis disponíveis com essas características. Quer informar região ou orçamento para refinar a busca?"
+    };
+  }
+
+  if (items.length === 1) {
+    const im: any = items[0] || {};
+    const titulo = im?.TituloSite || im?.title || "Imóvel encontrado";
+    const preco = im?.Valor || im?.price;
+    const precoFmt =
+      typeof preco === "number"
+        ? preco.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
+        : (preco || "");
+
+    const linhas = [
+      `Sim, esse imóvel está **disponível** ✅`,
+      `**${titulo}** ${precoFmt ? `• ${precoFmt}` : ""}`,
+      "",
+      `Posso te enviar mais fotos e detalhes?`
+    ].filter(Boolean);
+
+    return { handled: true, reply: linhas.join("\n") };
+  }
+
+  const tops = items.slice(0, 3).map((im: any) => {
+    const titulo = im?.TituloSite || im?.title || "Imóvel";
+    const preco = im?.Valor || im?.price;
+    const precoFmt =
+      typeof preco === "number"
+        ? preco.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
+        : (preco || "");
+    return `• ${titulo}${precoFmt ? ` — ${precoFmt}` : ""}`;
+  });
+
+  return {
+    handled: true,
+    reply: [
+      `Encontrei **${items.length} imóveis** semelhantes. Aqui estão alguns:`,
+      ...tops,
+      "",
+      `Quer que eu filtre por bairro, preço ou número de quartos?`
+    ].join("\n")
+  };
+}
+// --------------------------------------------------------------
 
 export const handleOpenAi = async (
   openAiSettings: IOpenAi,
@@ -77,17 +156,11 @@ export const handleOpenAi = async (
   mediaSent: Message | undefined,
   ticketTraking: TicketTraking
 ): Promise<void> => {
-  // REGRA PARA DESABILITAR O BOT PARA ALGUM CONTATO
-  if (contact.disableBot) {
-    return;
-  }
+  if (contact.disableBot) return;
 
   const bodyMessage = getBodyMessage(msg);
   if (!bodyMessage) return;
-  // console.log("GETTING WHATSAPP HANDLE OPENAI", ticket.whatsappId, ticket.id)
-
   if (!openAiSettings) return;
-
   if (msg.messageStubType) return;
 
   const publicFolder: string = path.resolve(
@@ -99,18 +172,30 @@ export const handleOpenAi = async (
     `company${ticket.companyId}`
   );
 
-  let openai: OpenAIApi | any;
-  const openAiIndex = sessionsOpenAi.findIndex(s => s.id === ticket.id);
-
-  if (openAiIndex === -1) {
-    const configuration = new Configuration({
-      apiKey: openAiSettings.apiKey
-    });
-    openai = new OpenAIApi(configuration);
+  // --------- Session cache (OpenAI v4) ----------
+  let openai: SessionOpenAi;
+  const idx = sessionsOpenAi.findIndex(s => s.id === ticket.id);
+  if (idx === -1) {
+    openai = new OpenAI({ apiKey: openAiSettings.apiKey }) as SessionOpenAi;
     openai.id = ticket.id;
     sessionsOpenAi.push(openai);
   } else {
-    openai = sessionsOpenAi[openAiIndex];
+    openai = sessionsOpenAi[idx];
+  }
+  // ---------------------------------------------
+
+  // HOOK: disponibilidade antes do LLM
+  try {
+    const tryAvail = await tryHandleAvailabilityByInventory(bodyMessage, ticket.companyId);
+    if (tryAvail?.handled) {
+      const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
+        text: `\u200e ${tryAvail.reply}`
+      });
+      await verifyMessage(sentMessage!, ticket, contact);
+      return;
+    }
+  } catch (err) {
+    logger.warn({ err }, "Availability hook falhou, continuando no LLM");
   }
 
   const messages = await Message.findAll({
@@ -121,153 +206,118 @@ export const handleOpenAi = async (
 
   const promptSystem = `Nas respostas utilize o nome ${sanitizeName(
     contact.name || "Amigo(a)"
-  )} para identificar o cliente.\nSua resposta deve usar no máximo ${
-    openAiSettings.maxTokens
-  } tokens e cuide para não truncar o final.\nSempre que possível, mencione o nome dele para ser mais personalizado o atendimento e mais educado. Quando a resposta requer uma transferência para o setor de atendimento, comece sua resposta com 'Ação: Transferir para o setor de atendimento'.\n
-                ${openAiSettings.prompt}\n`;
+  )}. Respeite o limite de ${openAiSettings.maxTokens} tokens.
+Sempre que possível, mencione o nome para personalizar o atendimento. 
+Se precisar transferir, comece com 'Ação: Transferir para o setor de atendimento'.\n
+${openAiSettings.prompt}\n`;
 
-  let messagesOpenAi = [];
+  let messagesOpenAi: Array<{ role: "system" | "user" | "assistant"; content: string }> = [];
 
+  // ------------------- Texto -------------------
   if (msg.message?.conversation || msg.message?.extendedTextMessage?.text) {
-    console.log(135, "OpenAiService");
-    messagesOpenAi = [];
     messagesOpenAi.push({ role: "system", content: promptSystem });
-    for (
-      let i = 0;
-      i < Math.min(openAiSettings.maxMessages, messages.length);
-      i++
-    ) {
-      const message = messages[i];
-      if (
-        message.mediaType === "conversation" ||
-        message.mediaType === "extendedTextMessage"
-      ) {
-        if (message.fromMe) {
-          messagesOpenAi.push({ role: "assistant", content: message.body });
-        } else {
-          messagesOpenAi.push({ role: "user", content: message.body });
-        }
+
+    for (let m of messages) {
+      if (m.mediaType === "conversation" || m.mediaType === "extendedTextMessage") {
+        messagesOpenAi.push({
+          role: m.fromMe ? "assistant" : "user",
+          content: m.body
+        });
       }
     }
     messagesOpenAi.push({ role: "user", content: bodyMessage! });
 
-    console.log(156, "OpenAiService");
-
-    const chat = await openai.createChatCompletion({
-      model: "gpt-3.5-turbo-1106",
+    const chat = await openai.chat.completions.create({
+      model: openAiSettings.model || "gpt-4o-mini", // 🔄 modelo atualizado
       messages: messagesOpenAi,
       max_tokens: openAiSettings.maxTokens,
       temperature: openAiSettings.temperature
     });
 
-    let response = chat.data.choices[0].message?.content;
+    let response = chat.choices?.[0]?.message?.content;
 
     if (response?.includes("Ação: Transferir para o setor de atendimento")) {
-      console.log(166, "OpenAiService");
       await transferQueue(openAiSettings.queueId, ticket, contact);
-      response = response
-        .replace("Ação: Transferir para o setor de atendimento", "")
-        .trim();
+      response = response.replace("Ação: Transferir para o setor de atendimento", "").trim();
     }
 
     if (openAiSettings.voice === "texto") {
-      console.log(173, "OpenAiService");
-      logger.info(chat.data.choices[0].message);
-      logger.info(response);
       const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
-        text: `\u200e ${response!}`
+        text: `\u200e ${response || ""}`
       });
       await verifyMessage(sentMessage!, ticket, contact);
     } else {
-      console.log(179, "OpenAiService");
-      const fileNameWithOutExtension = `${ticket.id}_${Date.now()}`;
+      const fileName = `${ticket.id}_${Date.now()}`;
       convertTextToSpeechAndSaveToFile(
-        keepOnlySpecifiedChars(response!),
-        `${publicFolder}/${fileNameWithOutExtension}`,
+        keepOnlySpecifiedChars(response || ""),
+        `${publicFolder}/${fileName}`,
         openAiSettings.voiceKey,
         openAiSettings.voiceRegion,
         openAiSettings.voice,
         "mp3"
       ).then(async () => {
         try {
-          console.log(194, "OpenAiService");
           const sendMessage = await wbot.sendMessage(msg.key.remoteJid!, {
-            audio: { url: `${publicFolder}/${fileNameWithOutExtension}.mp3` },
+            audio: { url: `${publicFolder}/${fileName}.mp3` },
             mimetype: "audio/mpeg",
             ptt: true
           });
-          await verifyMediaMessage(
-            sendMessage!,
-            ticket,
-            contact,
-            ticketTraking,
-            false,
-            false,
-            wbot
-          );
-          deleteFileSync(`${publicFolder}/${fileNameWithOutExtension}.mp3`);
-          deleteFileSync(`${publicFolder}/${fileNameWithOutExtension}.wav`);
+          await verifyMediaMessage(sendMessage!, ticket, contact, ticketTraking, false, false, wbot);
+          deleteFileSync(`${publicFolder}/${fileName}.mp3`);
         } catch (error) {
           console.log(`Erro para responder com audio: ${error}`);
         }
       });
     }
-  } else if (msg.message?.audioMessage) {
-    console.log(201, "OpenAiService");
+
+    return;
+  }
+
+  // ------------------- Áudio (transcrição) -------------------
+  if (msg.message?.audioMessage) {
     const mediaUrl = mediaSent!.mediaUrl!.split("/").pop();
-    const file = fs.createReadStream(`${publicFolder}/${mediaUrl}`) as any;
+    const file = fs.createReadStream(`${publicFolder}/${mediaUrl}`);
 
     const transcription = await openai.audio.transcriptions.create({
       model: "whisper-1",
-      file: file
+      file: file as any
     });
 
-    messagesOpenAi = [];
     messagesOpenAi.push({ role: "system", content: promptSystem });
-    for (
-      let i = 0;
-      i < Math.min(openAiSettings.maxMessages, messages.length);
-      i++
-    ) {
-      const message = messages[i];
-      if (
-        message.mediaType === "conversation" ||
-        message.mediaType === "extendedTextMessage"
-      ) {
-        console.log(238, "OpenAiService");
-
-        if (message.fromMe) {
-          messagesOpenAi.push({ role: "assistant", content: message.body });
-        } else {
-          messagesOpenAi.push({ role: "user", content: message.body });
-        }
+    for (let m of messages) {
+      if (m.mediaType === "conversation" || m.mediaType === "extendedTextMessage") {
+        messagesOpenAi.push({
+          role: m.fromMe ? "assistant" : "user",
+          content: m.body
+        });
       }
     }
     messagesOpenAi.push({ role: "user", content: transcription.text });
+
     const chat = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo-1106",
+      model: openAiSettings.model || "gpt-4o-mini", // 🔄 modelo atualizado
       messages: messagesOpenAi,
       max_tokens: openAiSettings.maxTokens,
       temperature: openAiSettings.temperature
     });
-    let response = chat.choices[0].message?.content;
+
+    let response = chat.choices?.[0]?.message?.content;
 
     if (response?.includes("Ação: Transferir para o setor de atendimento")) {
       await transferQueue(openAiSettings.queueId, ticket, contact);
-      response = response
-        .replace("Ação: Transferir para o setor de atendimento", "")
-        .trim();
+      response = response.replace("Ação: Transferir para o setor de atendimento", "").trim();
     }
+
     if (openAiSettings.voice === "texto") {
       const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
-        text: `\u200e ${response!}`
+        text: `\u200e ${response || ""}`
       });
       await verifyMessage(sentMessage!, ticket, contact);
     } else {
-      const fileNameWithOutExtension = `${ticket.id}_${Date.now()}`;
+      const fileName = `${ticket.id}_${Date.now()}`;
       convertTextToSpeechAndSaveToFile(
-        keepOnlySpecifiedChars(response!),
-        `${publicFolder}/${fileNameWithOutExtension}`,
+        keepOnlySpecifiedChars(response || ""),
+        `${publicFolder}/${fileName}`,
         openAiSettings.voiceKey,
         openAiSettings.voiceRegion,
         openAiSettings.voice,
@@ -275,26 +325,16 @@ export const handleOpenAi = async (
       ).then(async () => {
         try {
           const sendMessage = await wbot.sendMessage(msg.key.remoteJid!, {
-            audio: { url: `${publicFolder}/${fileNameWithOutExtension}.mp3` },
+            audio: { url: `${publicFolder}/${fileName}.mp3` },
             mimetype: "audio/mpeg",
             ptt: true
           });
-          await verifyMediaMessage(
-            sendMessage!,
-            ticket,
-            contact,
-            ticketTraking,
-            false,
-            false,
-            wbot
-          );
-          deleteFileSync(`${publicFolder}/${fileNameWithOutExtension}.mp3`);
-          deleteFileSync(`${publicFolder}/${fileNameWithOutExtension}.wav`);
+          await verifyMediaMessage(sendMessage!, ticket, contact, ticketTraking, false, false, wbot);
+          deleteFileSync(`${publicFolder}/${fileName}.mp3`);
         } catch (error) {
           console.log(`Erro para responder com audio: ${error}`);
         }
       });
     }
   }
-  messagesOpenAi = [];
 };

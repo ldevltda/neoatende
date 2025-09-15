@@ -2,17 +2,9 @@
 import { Request, Response } from "express";
 import InventoryIntegration from "../models/InventoryIntegration";
 import { resolveByIntent } from "../services/InventoryServices/ResolveIntegrationService";
-
-// Reaproveita os serviços que você já tem
 import { buildParamsForApi } from "../services/InventoryServices/PlannerService";
 import { runSearch } from "../services/InventoryServices/RunSearchService";
 
-/**
- * Endpoint para o AGENTE: dado um texto de intenção (ex.: "2 quartos em Campinas"),
- * escolhe a melhor integração cadastrada e executa a chamada normalizada.
- *
- * Sem migrations. Usa InventoryIntegrations exatamente como já está.
- */
 export const agentLookup = async (req: Request, res: Response) => {
   const {
     text = "",
@@ -26,8 +18,10 @@ export const agentLookup = async (req: Request, res: Response) => {
     pageSize?: number;
   } = (req.body || {}) as any;
 
-  // 1) Resolver integração por intenção
-  const pick = await resolveByIntent(text);
+  const companyId = (req.user as any)?.companyId;
+
+  // 1) Resolver integração por intenção, **dentro da empresa**
+  const pick = await resolveByIntent(text, companyId);
   if (!pick) {
     return res.status(404).json({
       error: "NoIntegrationMatched",
@@ -44,17 +38,14 @@ export const agentLookup = async (req: Request, res: Response) => {
       .json({ error: "IntegrationNotFound", integrationId: pick.id });
   }
 
-  // 3) Planejar apenas os PARAMS (runSearch cuida de method/url/body conforme a integração)
+  // 3) Planejar params (runSearch resolve method/url/body conforme a integração)
   const planned = buildParamsForApi(
     { text, filtros, paginacao: { page, pageSize } },
     (integ as any).pagination
   );
-
-  // buildParamsForApi costuma devolver algo como { params, ... } — garantimos o fallback
   const params = (planned && (planned as any).params) || {};
 
-  // 4) Executar usando a assinatura esperada pelo seu RunSearchService
-  //    -> NÃO enviar method/url/data aqui (o serviço resolve internamente)
+  // 4) Executar
   const out = await runSearch(integ as any, {
     params,
     page,
