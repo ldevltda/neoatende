@@ -68,7 +68,7 @@ export default function InventoryIntegrationsPage() {
     <Container maxWidth="lg" className={classes.root}>
       <Grid container spacing={3}>
         <Grid item xs={12}>
-          <Typography variant="h5"><b>Integração de Estoque (Genérica via API)</b></Typography>
+          <Typography variant="h5"><b>Integrações Externas  (Genérica via API)</b></Typography>
           <Typography variant="body2" color="textSecondary">
             Cadastre a URL e credenciais. Depois clique em <b>Inferir</b> para a IA entender a resposta e, por fim, <b>Testar</b>.
           </Typography>
