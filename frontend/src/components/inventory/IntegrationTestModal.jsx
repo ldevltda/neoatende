@@ -82,8 +82,8 @@ export default function IntegrationTestModal({ open, onClose, integration}) {
               </pre>
 
               {/* Preview simples de cards */}
-              <Typography variant="subtitle2" style={{ marginTop: 8 }}><b>Preview</b></Typography>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px,1fr))", gap: 12 }}>
+              {/* <Typography variant="subtitle2" style={{ marginTop: 8 }}><b>Preview</b></Typography> */}
+              {/* <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px,1fr))", gap: 12 }}>
                 {(result.items || []).map((it) => (
                   <div key={it.id} style={{ border: "1px solid #eee", borderRadius: 12, padding: 8 }}>
                     {it.midias?.[0]?.url && (
@@ -104,7 +104,7 @@ export default function IntegrationTestModal({ open, onClose, integration}) {
                     )}
                   </div>
                 ))}
-              </div>
+              </div> */}
             </Grid>
           )}
         </Grid>
