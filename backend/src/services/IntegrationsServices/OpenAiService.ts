@@ -1,5 +1,5 @@
 // backend/src/services/IntegrationsServices/OpenAiService.ts
-import { MessageUpsertType, proto, WASocket } from "baileys";
+import { proto, WASocket } from "baileys";
 import {
   convertTextToSpeechAndSaveToFile,
   getBodyMessage,
@@ -18,17 +18,11 @@ import Contact from "../../models/Contact";
 import Message from "../../models/Message";
 import TicketTraking from "../../models/TicketTraking";
 import { logger } from "../../utils/logger";
-
-// Integrações (Inventory)
-import { resolveByIntent } from "../InventoryServices/ResolveIntegrationService";
 import InventoryIntegration from "../../models/InventoryIntegration";
-import { buildParamsForApi } from "../InventoryServices/PlannerService";
-import { runSearch } from "../InventoryServices/RunSearchService";
+import axios from "axios";
+import { ChatCompletionTool } from "openai/resources/chat/completions";
 
-type Session = WASocket & {
-  id?: number;
-};
-
+type Session = WASocket & { id?: number };
 type SessionOpenAi = OpenAI & { id?: number };
 const sessionsOpenAi: SessionOpenAi[] = [];
 
@@ -43,7 +37,7 @@ interface IOpenAi {
   apiKey: string;
   queueId: number;
   maxMessages: number;
-  model?: string; // opcional: cada cliente pode escolher modelo
+  model?: string;
 }
 
 const deleteFileSync = (p: string): void => {
@@ -60,92 +54,59 @@ const sanitizeName = (name: string): string => {
   return sanitized.substring(0, 60);
 };
 
-// ---------- Helpers de disponibilidade via Inventory ----------
-function isAvailabilityQuestion(text: string) {
-  const t = (text || "").toLowerCase();
-  return (
-    /dispon[ií]vel/.test(t) ||
-    /ainda tem/.test(t) ||
-    /est[aá]\s+(a[ií]nda\s+)?dispon/.test(t) ||
-    /esse im[óo]vel/.test(t)
+/**
+ * Gera a lista de tools a partir das integrações cadastradas no companyId
+ */
+
+async function buildTools(companyId: number): Promise<ChatCompletionTool[]> {
+  const integrations = await InventoryIntegration.findAll({ where: { companyId } });
+  return integrations.map((i) =>
+    ({
+      type: "function", // agora literal
+      function: {
+        name: `integration_${i.get("id")}`,
+        description: `Consulta integração cadastrada: ${i.get("name")}`,
+        parameters: {
+          type: "object",
+          properties: {
+            text: { type: "string", description: "Texto ou critério de busca fornecido pelo cliente" },
+            filtros: { type: "object", description: "Filtros adicionais (preço, bairro, modelo, etc.)" },
+            page: { type: "integer", description: "Página da busca" },
+            pageSize: { type: "integer", description: "Itens por página" }
+          },
+          required: ["text"]
+        }
+      }
+    }) as ChatCompletionTool // 👈 força o tipo certo
   );
 }
 
-async function tryHandleAvailabilityByInventory(text: string, companyId: number) {
-  if (!isAvailabilityQuestion(text)) return null;
-
-  const pick = await resolveByIntent(text, companyId);
-  if (!pick) return null;
-
-  const integ = await InventoryIntegration.findByPk(pick.id);
-  if (!integ) return null;
-
-  const page = 1;
-  const pageSize = 5;
-
-  const planned = buildParamsForApi(
-    { text, filtros: {}, paginacao: { page, pageSize } },
-    (integ as any).pagination
-  );
-
-  const params = (planned && (planned as any).params) || {};
-  const result = await runSearch(integ as any, {
-    params,
-    page,
-    pageSize,
-    text,
-    filtros: {}
-  } as any);
-
-  const items = Array.isArray(result?.items) ? result.items : [];
-  if (!items.length) {
-    return {
-      handled: true,
-      reply:
-        "Não encontrei imóveis disponíveis com essas características. Quer informar região ou orçamento para refinar a busca?"
-    };
+/**
+ * Executa uma integração específica via /inventory/agent/lookup
+ */
+async function executeIntegration(
+  integrationId: number,
+  args: any,
+  companyId: number
+) {
+  try {
+    const result = await axios.post(
+      `${process.env.BACKEND_URL || "http://localhost:3000"}/inventory/agent/lookup`,
+      {
+        integrationId,
+        companyId,
+        text: args.text,
+        filtros: args.filtros || {},
+        page: args.page || 1,
+        pageSize: args.pageSize || 10
+      }
+    );
+    return result.data;
+  } catch (err: any) {
+    logger.error({ err }, "Erro ao executar integração");
+    return { error: "IntegrationExecutionFailed", message: err.message };
   }
-
-  if (items.length === 1) {
-    const im: any = items[0] || {};
-    const titulo = im?.TituloSite || im?.title || "Imóvel encontrado";
-    const preco = im?.Valor || im?.price;
-    const precoFmt =
-      typeof preco === "number"
-        ? preco.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
-        : (preco || "");
-
-    const linhas = [
-      `Sim, esse imóvel está **disponível** ✅`,
-      `**${titulo}** ${precoFmt ? `• ${precoFmt}` : ""}`,
-      "",
-      `Posso te enviar mais fotos e detalhes?`
-    ].filter(Boolean);
-
-    return { handled: true, reply: linhas.join("\n") };
-  }
-
-  const tops = items.slice(0, 3).map((im: any) => {
-    const titulo = im?.TituloSite || im?.title || "Imóvel";
-    const preco = im?.Valor || im?.price;
-    const precoFmt =
-      typeof preco === "number"
-        ? preco.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
-        : (preco || "");
-    return `• ${titulo}${precoFmt ? ` — ${precoFmt}` : ""}`;
-  });
-
-  return {
-    handled: true,
-    reply: [
-      `Encontrei **${items.length} imóveis** semelhantes. Aqui estão alguns:`,
-      ...tops,
-      "",
-      `Quer que eu filtre por bairro, preço ou número de quartos?`
-    ].join("\n")
-  };
 }
-// --------------------------------------------------------------
 
 export const handleOpenAi = async (
   openAiSettings: IOpenAi,
@@ -174,7 +135,7 @@ export const handleOpenAi = async (
 
   // --------- Session cache (OpenAI v4) ----------
   let openai: SessionOpenAi;
-  const idx = sessionsOpenAi.findIndex(s => s.id === ticket.id);
+  const idx = sessionsOpenAi.findIndex((s) => s.id === ticket.id);
   if (idx === -1) {
     openai = new OpenAI({ apiKey: openAiSettings.apiKey }) as SessionOpenAi;
     openai.id = ticket.id;
@@ -184,157 +145,105 @@ export const handleOpenAi = async (
   }
   // ---------------------------------------------
 
-  // HOOK: disponibilidade antes do LLM
-  try {
-    const tryAvail = await tryHandleAvailabilityByInventory(bodyMessage, ticket.companyId);
-    if (tryAvail?.handled) {
-      const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
-        text: `\u200e ${tryAvail.reply}`
-      });
-      await verifyMessage(sentMessage!, ticket, contact);
-      return;
-    }
-  } catch (err) {
-    logger.warn({ err }, "Availability hook falhou, continuando no LLM");
-  }
-
   const messages = await Message.findAll({
     where: { ticketId: ticket.id },
     order: [["createdAt", "ASC"]],
     limit: openAiSettings.maxMessages
   });
 
-  const promptSystem = `Nas respostas utilize o nome ${sanitizeName(
-    contact.name || "Amigo(a)"
-  )}. Respeite o limite de ${openAiSettings.maxTokens} tokens.
-Sempre que possível, mencione o nome para personalizar o atendimento. 
+  const promptSystem = `Você é um agente de atendimento. 
+Use o nome ${sanitizeName(contact.name || "Amigo(a)")} para personalizar. 
+Respeite o limite de ${openAiSettings.maxTokens} tokens. 
+Sempre que possível, mencione o nome do cliente. 
 Se precisar transferir, comece com 'Ação: Transferir para o setor de atendimento'.\n
 ${openAiSettings.prompt}\n`;
 
-  let messagesOpenAi: Array<{ role: "system" | "user" | "assistant"; content: string }> = [];
+  let messagesOpenAi: Array<any> = [];
+  messagesOpenAi.push({ role: "system", content: promptSystem });
 
-  // ------------------- Texto -------------------
-  if (msg.message?.conversation || msg.message?.extendedTextMessage?.text) {
-    messagesOpenAi.push({ role: "system", content: promptSystem });
-
-    for (let m of messages) {
-      if (m.mediaType === "conversation" || m.mediaType === "extendedTextMessage") {
-        messagesOpenAi.push({
-          role: m.fromMe ? "assistant" : "user",
-          content: m.body
-        });
-      }
+  for (let m of messages) {
+    if (m.mediaType === "conversation" || m.mediaType === "extendedTextMessage") {
+      messagesOpenAi.push({
+        role: m.fromMe ? "assistant" : "user",
+        content: m.body
+      });
     }
-    messagesOpenAi.push({ role: "user", content: bodyMessage! });
+  }
+  messagesOpenAi.push({ role: "user", content: bodyMessage! });
 
-    const chat = await openai.chat.completions.create({
-      model: openAiSettings.model || "gpt-4o-mini", // 🔄 modelo atualizado
+  const tools = await buildTools(ticket.companyId);
+
+  const chat = await openai.chat.completions.create({
+    model: openAiSettings.model || "gpt-4o-mini",
+    messages: messagesOpenAi,
+    tools, // ✅ agora compatível com ChatCompletionTool[]
+    tool_choice: "auto",
+    max_tokens: openAiSettings.maxTokens,
+    temperature: openAiSettings.temperature
+  });
+
+  let response = chat.choices?.[0]?.message?.content;
+
+  // Se houver tool_calls → executar e refazer completion
+  if (chat.choices?.[0]?.message?.tool_calls) {
+    for (const call of chat.choices[0].message.tool_calls) {
+      const fnName = call.function.name; // ex.: integration_7
+      const args = JSON.parse(call.function.arguments || "{}");
+      const integrationId = parseInt(fnName.replace("integration_", ""), 10);
+
+      const result = await executeIntegration(integrationId, args, ticket.companyId);
+
+      messagesOpenAi.push({
+        role: "tool",
+        tool_call_id: call.id,
+        content: JSON.stringify(result)
+      });
+    }
+
+    // refazer completion agora com os resultados das integrações
+    const chat2 = await openai.chat.completions.create({
+      model: openAiSettings.model || "gpt-4o-mini",
       messages: messagesOpenAi,
       max_tokens: openAiSettings.maxTokens,
       temperature: openAiSettings.temperature
     });
 
-    let response = chat.choices?.[0]?.message?.content;
-
-    if (response?.includes("Ação: Transferir para o setor de atendimento")) {
-      await transferQueue(openAiSettings.queueId, ticket, contact);
-      response = response.replace("Ação: Transferir para o setor de atendimento", "").trim();
-    }
-
-    if (openAiSettings.voice === "texto") {
-      const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
-        text: `\u200e ${response || ""}`
-      });
-      await verifyMessage(sentMessage!, ticket, contact);
-    } else {
-      const fileName = `${ticket.id}_${Date.now()}`;
-      convertTextToSpeechAndSaveToFile(
-        keepOnlySpecifiedChars(response || ""),
-        `${publicFolder}/${fileName}`,
-        openAiSettings.voiceKey,
-        openAiSettings.voiceRegion,
-        openAiSettings.voice,
-        "mp3"
-      ).then(async () => {
-        try {
-          const sendMessage = await wbot.sendMessage(msg.key.remoteJid!, {
-            audio: { url: `${publicFolder}/${fileName}.mp3` },
-            mimetype: "audio/mpeg",
-            ptt: true
-          });
-          await verifyMediaMessage(sendMessage!, ticket, contact, ticketTraking, false, false, wbot);
-          deleteFileSync(`${publicFolder}/${fileName}.mp3`);
-        } catch (error) {
-          console.log(`Erro para responder com audio: ${error}`);
-        }
-      });
-    }
-
-    return;
+    response = chat2.choices?.[0]?.message?.content;
   }
 
-  // ------------------- Áudio (transcrição) -------------------
-  if (msg.message?.audioMessage) {
-    const mediaUrl = mediaSent!.mediaUrl!.split("/").pop();
-    const file = fs.createReadStream(`${publicFolder}/${mediaUrl}`);
+  // Transferência automática
+  if (response?.includes("Ação: Transferir para o setor de atendimento")) {
+    await transferQueue(openAiSettings.queueId, ticket, contact);
+    response = response.replace("Ação: Transferir para o setor de atendimento", "").trim();
+  }
 
-    const transcription = await openai.audio.transcriptions.create({
-      model: "whisper-1",
-      file: file as any
+  // enviar resposta
+  if (openAiSettings.voice === "texto") {
+    const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
+      text: `\u200e ${response || ""}`
     });
-
-    messagesOpenAi.push({ role: "system", content: promptSystem });
-    for (let m of messages) {
-      if (m.mediaType === "conversation" || m.mediaType === "extendedTextMessage") {
-        messagesOpenAi.push({
-          role: m.fromMe ? "assistant" : "user",
-          content: m.body
+    await verifyMessage(sentMessage!, ticket, contact);
+  } else {
+    const fileName = `${ticket.id}_${Date.now()}`;
+    convertTextToSpeechAndSaveToFile(
+      keepOnlySpecifiedChars(response || ""),
+      `${publicFolder}/${fileName}`,
+      openAiSettings.voiceKey,
+      openAiSettings.voiceRegion,
+      openAiSettings.voice,
+      "mp3"
+    ).then(async () => {
+      try {
+        const sendMessage = await wbot.sendMessage(msg.key.remoteJid!, {
+          audio: { url: `${publicFolder}/${fileName}.mp3` },
+          mimetype: "audio/mpeg",
+          ptt: true
         });
+        await verifyMediaMessage(sendMessage!, ticket, contact, ticketTraking, false, false, wbot);
+        deleteFileSync(`${publicFolder}/${fileName}.mp3`);
+      } catch (error) {
+        console.log(`Erro para responder com audio: ${error}`);
       }
-    }
-    messagesOpenAi.push({ role: "user", content: transcription.text });
-
-    const chat = await openai.chat.completions.create({
-      model: openAiSettings.model || "gpt-4o-mini", // 🔄 modelo atualizado
-      messages: messagesOpenAi,
-      max_tokens: openAiSettings.maxTokens,
-      temperature: openAiSettings.temperature
     });
-
-    let response = chat.choices?.[0]?.message?.content;
-
-    if (response?.includes("Ação: Transferir para o setor de atendimento")) {
-      await transferQueue(openAiSettings.queueId, ticket, contact);
-      response = response.replace("Ação: Transferir para o setor de atendimento", "").trim();
-    }
-
-    if (openAiSettings.voice === "texto") {
-      const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
-        text: `\u200e ${response || ""}`
-      });
-      await verifyMessage(sentMessage!, ticket, contact);
-    } else {
-      const fileName = `${ticket.id}_${Date.now()}`;
-      convertTextToSpeechAndSaveToFile(
-        keepOnlySpecifiedChars(response || ""),
-        `${publicFolder}/${fileName}`,
-        openAiSettings.voiceKey,
-        openAiSettings.voiceRegion,
-        openAiSettings.voice,
-        "mp3"
-      ).then(async () => {
-        try {
-          const sendMessage = await wbot.sendMessage(msg.key.remoteJid!, {
-            audio: { url: `${publicFolder}/${fileName}.mp3` },
-            mimetype: "audio/mpeg",
-            ptt: true
-          });
-          await verifyMediaMessage(sendMessage!, ticket, contact, ticketTraking, false, false, wbot);
-          deleteFileSync(`${publicFolder}/${fileName}.mp3`);
-        } catch (error) {
-          console.log(`Erro para responder com audio: ${error}`);
-        }
-      });
-    }
   }
 };
