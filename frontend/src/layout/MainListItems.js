@@ -493,7 +493,7 @@ const MainListItems = (props) => {
             {showIntegrations && (
               <ListItemLink
                 to="/inventory"            // alinhar com a rota acima
-                primary="Estoque (API)"
+                primary="Integrações (APIs Externas)"
                 icon={<ListIcon />}        // já importado como ListIcon from "@material-ui/icons/ListAlt"
               />
             )}
