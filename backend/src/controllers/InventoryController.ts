@@ -7,10 +7,10 @@ import { ensureRolemap } from "../services/InventoryServices/RoleMapperService";
 import { runSearch } from "../services/InventoryServices/RunSearchService";
 
 /**
- * Schema “flexível”:
- * - auth é OPCIONAL e defaulta para { type: "none", in: "header" }
- * - pagination é OPCIONAL e defaulta para { strategy: "none", ... }
- * - endpoint.default_* e headers aceitam qualquer coisa (fazemos cast p/ objeto)
+ * Schema flexível:
+ * - auth é OPCIONAL (default: { type: "none", in: "header" })
+ * - pagination é OPCIONAL (default: strategy "none")
+ * - endpoint.default_* e headers aceitam qualquer valor e defaultam p/ {}
  */
 const createSchema = Yup.object({
   name: Yup.string().required(),
@@ -62,7 +62,7 @@ const createSchema = Yup.object({
 });
 
 export const createIntegration = async (req: Request, res: Response) => {
-  // aplica defaults antes de validar (não depender do front)
+  // Aplica defaults antes de validar
   const casted = createSchema.cast(req.body);
   try {
     await createSchema.validate(casted, { abortEarly: false });
