@@ -1,4 +1,3 @@
-// backend/src/services/IntegrationsServices/OpenAiService.ts
 import { proto, WASocket } from "baileys";
 import {
   convertTextToSpeechAndSaveToFile,
@@ -11,6 +10,7 @@ import {
 
 import fs from "fs";
 import path from "path";
+import axios from "axios";
 
 import OpenAI from "openai";
 import Ticket from "../../models/Ticket";
@@ -19,7 +19,6 @@ import Message from "../../models/Message";
 import TicketTraking from "../../models/TicketTraking";
 import { logger } from "../../utils/logger";
 import InventoryIntegration from "../../models/InventoryIntegration";
-import axios from "axios";
 import { ChatCompletionTool } from "openai/resources/chat/completions";
 
 type Session = WASocket & { id?: number };
@@ -37,15 +36,11 @@ interface IOpenAi {
   apiKey: string;
   queueId: number;
   maxMessages: number;
-  model?: string;
+  model?: string; // gpt-4o-mini default
 }
 
 const deleteFileSync = (p: string): void => {
-  try {
-    fs.unlinkSync(p);
-  } catch (error) {
-    console.error("Erro ao deletar o arquivo:", error);
-  }
+  try { fs.unlinkSync(p); } catch {}
 };
 
 const sanitizeName = (name: string): string => {
@@ -55,56 +50,54 @@ const sanitizeName = (name: string): string => {
 };
 
 /**
- * Gera a lista de tools a partir das integrações cadastradas no companyId
+ * Gera tools dinamicamente com base nas integrações da empresa
  */
-
 async function buildTools(companyId: number): Promise<ChatCompletionTool[]> {
   const integrations = await InventoryIntegration.findAll({ where: { companyId } });
   return integrations.map((i) =>
     ({
-      type: "function", // agora literal
+      type: "function",
       function: {
         name: `integration_${i.get("id")}`,
-        description: `Consulta integração cadastrada: ${i.get("name")}`,
+        description: `Consulta a integração cadastrada: ${i.get("name")}`,
         parameters: {
           type: "object",
           properties: {
-            text: { type: "string", description: "Texto ou critério de busca fornecido pelo cliente" },
-            filtros: { type: "object", description: "Filtros adicionais (preço, bairro, modelo, etc.)" },
+            text: { type: "string", description: "Texto/critério de busca do cliente" },
+            filtros: { type: "object", description: "Filtros (ex.: bairro, quartos, preçoMax, marca...)" },
             page: { type: "integer", description: "Página da busca" },
             pageSize: { type: "integer", description: "Itens por página" }
           },
           required: ["text"]
         }
       }
-    }) as ChatCompletionTool // 👈 força o tipo certo
+    }) as ChatCompletionTool
   );
 }
 
 /**
- * Executa uma integração específica via /inventory/agent/lookup
+ * Executa a integração via /inventory/agent/lookup
+ * (passamos integrationId, text, filtros, paginação e companyId)
  */
 async function executeIntegration(
   integrationId: number,
   args: any,
   companyId: number
 ) {
+  const url = `${(process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "")}/inventory/agent/lookup`;
   try {
-    const result = await axios.post(
-      `${process.env.BACKEND_URL || "http://localhost:3000"}/inventory/agent/lookup`,
-      {
-        integrationId,
-        companyId,
-        text: args.text,
-        filtros: args.filtros || {},
-        page: args.page || 1,
-        pageSize: args.pageSize || 10
-      }
-    );
-    return result.data;
+    const { data } = await axios.post(url, {
+      integrationId,
+      companyId,
+      text: args.text,
+      filtros: args.filtros || {},
+      page: args.page || 1,
+      pageSize: args.pageSize || 10
+    });
+    return data; // { items, total, ... }
   } catch (err: any) {
     logger.error({ err }, "Erro ao executar integração");
-    return { error: "IntegrationExecutionFailed", message: err.message };
+    return { error: "IntegrationExecutionFailed", message: err?.message || "Falha na execução" };
   }
 }
 
@@ -125,17 +118,12 @@ export const handleOpenAi = async (
   if (msg.messageStubType) return;
 
   const publicFolder: string = path.resolve(
-    __dirname,
-    "..",
-    "..",
-    "..",
-    "public",
-    `company${ticket.companyId}`
+    __dirname, "..", "..", "..", "public", `company${ticket.companyId}`
   );
 
-  // --------- Session cache (OpenAI v4) ----------
+  // cache de sessão do OpenAI v4
   let openai: SessionOpenAi;
-  const idx = sessionsOpenAi.findIndex((s) => s.id === ticket.id);
+  const idx = sessionsOpenAi.findIndex(s => s.id === ticket.id);
   if (idx === -1) {
     openai = new OpenAI({ apiKey: openAiSettings.apiKey }) as SessionOpenAi;
     openai.id = ticket.id;
@@ -143,25 +131,25 @@ export const handleOpenAi = async (
   } else {
     openai = sessionsOpenAi[idx];
   }
-  // ---------------------------------------------
 
+  // histórico como sempre
   const messages = await Message.findAll({
     where: { ticketId: ticket.id },
     order: [["createdAt", "ASC"]],
     limit: openAiSettings.maxMessages
   });
 
-  const promptSystem = `Você é um agente de atendimento. 
-Use o nome ${sanitizeName(contact.name || "Amigo(a)")} para personalizar. 
-Respeite o limite de ${openAiSettings.maxTokens} tokens. 
-Sempre que possível, mencione o nome do cliente. 
-Se precisar transferir, comece com 'Ação: Transferir para o setor de atendimento'.\n
+  const promptSystem = `Você é um agente de atendimento multiempresas (SaaS).
+Use o nome ${sanitizeName(contact.name || "Amigo(a)")} para personalizar.
+Respeite o limite de ${openAiSettings.maxTokens} tokens.
+Se precisar transferir, comece com 'Ação: Transferir para o setor de atendimento'.
+Quando houver integrações disponíveis, você pode chamá-las para obter dados reais.\n
 ${openAiSettings.prompt}\n`;
 
-  let messagesOpenAi: Array<any> = [];
+  let messagesOpenAi: Array<{ role: "system" | "user" | "assistant" | "tool"; content: string; tool_call_id?: string }> = [];
   messagesOpenAi.push({ role: "system", content: promptSystem });
 
-  for (let m of messages) {
+  for (const m of messages) {
     if (m.mediaType === "conversation" || m.mediaType === "extendedTextMessage") {
       messagesOpenAi.push({
         role: m.fromMe ? "assistant" : "user",
@@ -171,12 +159,14 @@ ${openAiSettings.prompt}\n`;
   }
   messagesOpenAi.push({ role: "user", content: bodyMessage! });
 
+  // tools dinâmicas
   const tools = await buildTools(ticket.companyId);
 
+  // 1ª chamada — com tools
   const chat = await openai.chat.completions.create({
     model: openAiSettings.model || "gpt-4o-mini",
-    messages: messagesOpenAi,
-    tools, // ✅ agora compatível com ChatCompletionTool[]
+    messages: messagesOpenAi as any,
+    tools,
     tool_choice: "auto",
     max_tokens: openAiSettings.maxTokens,
     temperature: openAiSettings.temperature
@@ -184,10 +174,10 @@ ${openAiSettings.prompt}\n`;
 
   let response = chat.choices?.[0]?.message?.content;
 
-  // Se houver tool_calls → executar e refazer completion
+  // Se o modelo pedir tools, executa e refaz a completion
   if (chat.choices?.[0]?.message?.tool_calls) {
     for (const call of chat.choices[0].message.tool_calls) {
-      const fnName = call.function.name; // ex.: integration_7
+      const fnName = call.function.name; // "integration_7"
       const args = JSON.parse(call.function.arguments || "{}");
       const integrationId = parseInt(fnName.replace("integration_", ""), 10);
 
@@ -200,10 +190,9 @@ ${openAiSettings.prompt}\n`;
       });
     }
 
-    // refazer completion agora com os resultados das integrações
     const chat2 = await openai.chat.completions.create({
       model: openAiSettings.model || "gpt-4o-mini",
-      messages: messagesOpenAi,
+      messages: messagesOpenAi as any,
       max_tokens: openAiSettings.maxTokens,
       temperature: openAiSettings.temperature
     });
@@ -211,13 +200,13 @@ ${openAiSettings.prompt}\n`;
     response = chat2.choices?.[0]?.message?.content;
   }
 
-  // Transferência automática
+  // Transferência automática, se o modelo pedir
   if (response?.includes("Ação: Transferir para o setor de atendimento")) {
     await transferQueue(openAiSettings.queueId, ticket, contact);
     response = response.replace("Ação: Transferir para o setor de atendimento", "").trim();
   }
 
-  // enviar resposta
+  // envio da resposta
   if (openAiSettings.voice === "texto") {
     const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
       text: `\u200e ${response || ""}`

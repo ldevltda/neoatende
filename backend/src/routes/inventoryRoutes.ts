@@ -5,19 +5,21 @@ import {
   inferIntegration,
   guidedFix,
   searchInventory,
-  listIntegrations
+  listIntegrations // ← já existe
 } from "../controllers/InventoryController";
-import { agentLookup } from "../controllers/InventoryAgentController";
-import * as InventoryAgentController from "../controllers/InventoryAgentController";
+
+// +++
+import { agentLookup } from "../controllers/InventoryAgentController"; // ← ADICIONE
 
 const routes = Router();
 
-routes.get("/inventory/integrations", isAuth, listIntegrations); // ← ADD
+routes.get("/inventory/integrations", isAuth, listIntegrations);
 routes.post("/inventory/integrations", isAuth, createIntegration);
 routes.post("/inventory/integrations/:id/infer", isAuth, inferIntegration);
 routes.post("/inventory/integrations/:id/guided-fix", isAuth, guidedFix);
 routes.post("/inventory/integrations/:id/search", isAuth, searchInventory);
-routes.post("/inventory/agent/lookup", isAuth, agentLookup);
-routes.post("/inventory/agent/lookup", InventoryAgentController.agentLookup);
+
+// +++
+routes.post("/inventory/agent/lookup", isAuth, agentLookup); // ← ADICIONE
 
 export default routes;

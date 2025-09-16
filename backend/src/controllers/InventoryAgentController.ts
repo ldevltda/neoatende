@@ -1,24 +1,23 @@
 // backend/src/controllers/InventoryAgentController.ts
 import { Request, Response } from "express";
 import InventoryIntegration from "../models/InventoryIntegration";
-import { resolveByIntent } from "../services/InventoryServices/ResolveIntegrationService";
 import { buildParamsForApi } from "../services/InventoryServices/PlannerService";
 import { runSearch } from "../services/InventoryServices/RunSearchService";
 
 /**
  * Executa uma consulta em integrações cadastradas.
  * - Se "integrationId" for informado: usa diretamente essa integração (verificando companyId).
- * - Caso contrário: resolve por intenção (nome/categoryHint) restrito ao companyId.
- * - Reaproveita PlannerService + RunSearchService (sem alterar nada do contrato existente).
+ * - Caso contrário: resolve pela primeira integração disponível dessa empresa.
+ *   (Se quiser o resolver por intenção/categoria depois, a gente pluga por aqui.)
  *
- * Body esperado:
+ * Body:
  * {
  *   "integrationId"?: number,
  *   "text": string,
  *   "filtros"?: object,
  *   "page"?: number,
  *   "pageSize"?: number,
- *   "companyId"?: number // opcional, só como fallback (preferimos req.user.companyId)
+ *   "companyId"?: number // fallback, preferimos req.user.companyId
  * }
  */
 export const agentLookup = async (req: Request, res: Response) => {
@@ -39,7 +38,6 @@ export const agentLookup = async (req: Request, res: Response) => {
       companyId?: number;
     } = (req.body || {}) as any;
 
-    // Multiempresa: prioriza companyId do usuário autenticado
     const companyId = (req as any)?.user?.companyId ?? companyIdFromBody;
     if (!companyId) {
       return res.status(400).json({
@@ -48,14 +46,11 @@ export const agentLookup = async (req: Request, res: Response) => {
       });
     }
 
-    // 1) Escolher integração
+    // 1) escolher integração
     let integ: InventoryIntegration | null = null;
 
     if (integrationId) {
-      // valida se pertence à empresa
-      integ = await InventoryIntegration.findOne({
-        where: { id: integrationId, companyId }
-      });
+      integ = await InventoryIntegration.findOne({ where: { id: integrationId, companyId } });
       if (!integ) {
         return res.status(404).json({
           error: "IntegrationNotFound",
@@ -63,32 +58,24 @@ export const agentLookup = async (req: Request, res: Response) => {
         });
       }
     } else {
-      // resolve por intenção (nome/categoryHint) dentro da empresa
-      const pick = await resolveByIntent(text, companyId);
-      if (!pick) {
-        return res.status(404).json({
-          error: "NoIntegrationMatched",
-          message:
-            "Nenhuma integração parece adequada para esta intenção. Ajuste o categoryHint/nome da integração ou informe integrationId explicitamente."
-        });
-      }
-      integ = await InventoryIntegration.findByPk(pick.id);
+      // fallback simples: pega a primeira integração da empresa
+      integ = await InventoryIntegration.findOne({ where: { companyId }, order: [["id", "ASC"]] });
       if (!integ) {
         return res.status(404).json({
-          error: "IntegrationNotFound",
-          message: `Integração ${pick.id} não encontrada.`
+          error: "NoIntegrationForCompany",
+          message: "Nenhuma integração cadastrada para esta empresa."
         });
       }
     }
 
-    // 2) Planejar parâmetros (PlannerService define paginação/query/body conforme integração)
+    // 2) montar params conforme config de paginação da integração
     const planned = buildParamsForApi(
       { text, filtros, paginacao: { page, pageSize } },
       (integ as any).pagination
     );
     const params = (planned && (planned as any).params) || {};
 
-    // 3) Executar e normalizar (RunSearchService já aplica rolemap/schema)
+    // 3) executar e normalizar
     const out = await runSearch(integ as any, {
       params,
       page,
@@ -103,7 +90,7 @@ export const agentLookup = async (req: Request, res: Response) => {
       integrationName: integ.get("name"),
       categoryHint: integ.get("categoryHint") || null,
       query: { text, filtros, page, pageSize },
-      ...out // geralmente { items, total, page, pageSize, raw? }
+      ...out
     });
   } catch (err: any) {
     console.error("agentLookup error:", err);
