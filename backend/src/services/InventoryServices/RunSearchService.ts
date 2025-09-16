@@ -85,16 +85,39 @@ function applyAuthToRequest(cfg: AxiosRequestConfig, auth: AuthConfig | undefine
   }
 }
 
-function normalizeItems(items: any[], rolemap?: Record<string, string>): any[] {
+function normalizeItems(items: any[], rolemap?: any): any[] {
   if (!Array.isArray(items)) return [];
   if (!rolemap || typeof rolemap !== "object") return items;
-  return items.map(src => {
-    const dst: Record<string, any> = {};
-    for (const [toKey, fromPath] of Object.entries(rolemap)) {
-      // rolemap atual usa "campo -> path" direto (sem $.)
-      const path = String(fromPath).replace(/^\$\./, "");
-      dst[toKey] = deepGet(src, path, undefined);
+
+  // Detecta formato novo ({ listPath, fields: { k: {path} | "path" } })
+  let mapping: Record<string, string> = {};
+  if (rolemap && typeof rolemap === "object" && rolemap.fields) {
+    const fields = rolemap.fields as Record<string, any>;
+    for (const [k, v] of Object.entries(fields)) {
+      if (typeof v === "string") mapping[k] = v;
+      else if (v && typeof v === "object" && typeof (v as any).path === "string") {
+        mapping[k] = (v as any).path;
+      }
     }
+  } else {
+    // Formato antigo (campo -> "TituloSite")
+    mapping = rolemap as Record<string, string>;
+  }
+
+  // Se por algum motivo não houver mapeamento útil, devolve itens crus
+  if (!mapping || !Object.keys(mapping).length) return items;
+
+  const stripRoot = (p: string) => String(p).replace(/^\$\./, "");
+
+  return items.map((src) => {
+    const dst: Record<string, any> = {};
+    for (const [toKey, fromPathRaw] of Object.entries(mapping)) {
+      if (!fromPathRaw) continue;
+      const fromPath = stripRoot(fromPathRaw as string);
+      const val = deepGet(src, fromPath, undefined);
+      if (val !== undefined) dst[toKey] = val;
+    }
+    // só usa o mapeado se pegou ao menos 1 valor; senão, devolve o objeto original
     return Object.keys(dst).length ? dst : src;
   });
 }
