@@ -3,7 +3,7 @@ import axios, { AxiosRequestConfig } from "axios";
 import { logger } from "../../utils/logger";
 
 /**
- * Tipos auxiliares (ajuste se seu projeto já tiver tipos próprios)
+ * Tipos auxiliares
  */
 type AuthConfig =
   | { type: "none" }
@@ -12,10 +12,14 @@ type AuthConfig =
   | { type: "basic"; username: string; password: string };
 
 type EndpointConfig = {
-  method: string;             // GET | POST | ...
-  url: string;                // URL base/rota
+  method: string;                   // GET | POST | ...
+  url: string;                      // URL base/rota
   headers?: Record<string, string>;
-  defaults?: Record<string, any>; // parâmetros/body padrão
+  /** Suporte legado (se existir) */
+  defaults?: Record<string, any>;
+  /** Campos novos usados pela tela (GET usa default_query; POST usa default_body) */
+  default_query?: Record<string, any>;
+  default_body?: Record<string, any>;
   timeout_s?: number;
 };
 
@@ -35,7 +39,7 @@ type RunSearchInput = {
   page?: number;
   pageSize?: number;
   text?: string;
-  filtros?: Record<string, any>;
+  filtros?: Record<string, any>; // vindo do modal "Filtros (JSON)"
 };
 
 type RunSearchOutput = {
@@ -63,10 +67,7 @@ function deepGet(obj: any, path: string, fallback?: any) {
 }
 
 /** Aplica autenticação na request (header/query) */
-function applyAuthToRequest(
-  cfg: AxiosRequestConfig,
-  auth: AuthConfig | undefined | null
-) {
+function applyAuthToRequest(cfg: AxiosRequestConfig, auth: AuthConfig | undefined | null) {
   if (!auth || auth.type === "none") return;
 
   cfg.headers = cfg.headers || {};
@@ -76,19 +77,19 @@ function applyAuthToRequest(
     case "api_key": {
       const value = auth.prefix ? `${auth.prefix}${auth.key}` : auth.key;
       if (auth.in === "header") {
-        cfg.headers[auth.name] = value;
+        (cfg.headers as any)[auth.name] = value;
       } else {
         (cfg.params as any)[auth.name] = value;
       }
       break;
     }
     case "bearer": {
-      cfg.headers["Authorization"] = `Bearer ${auth.token}`;
+      (cfg.headers as any)["Authorization"] = `Bearer ${auth.token}`;
       break;
     }
     case "basic": {
       const b64 = Buffer.from(`${auth.username}:${auth.password}`).toString("base64");
-      cfg.headers["Authorization"] = `Basic ${b64}`;
+      (cfg.headers as any)["Authorization"] = `Basic ${b64}`;
       break;
     }
   }
@@ -113,7 +114,6 @@ function extractFromResponse(
   respData: any,
   schema?: { itemsPath?: string; totalPath?: string }
 ) {
-  // Padrão bem comum: data.items / data.total
   const itemsPath = schema?.itemsPath || "data.items";
   const totalPath = schema?.totalPath || "data.total";
 
@@ -123,13 +123,30 @@ function extractFromResponse(
   return { items, total };
 }
 
+/** Aplica paginação nos parâmetros conforme a config */
+function applyPagination(
+  planned: Record<string, any>,
+  pagination: PaginationConfig | undefined,
+  page: number,
+  pageSize: number
+) {
+  if (!pagination || pagination.type === "none") return;
+
+  const pName = pagination.param || (pagination.type === "offset" ? "offset" : "page");
+  const sName = pagination.sizeParam || (pagination.type === "offset" ? "limit" : "pageSize");
+
+  if (pagination.type === "page") {
+    planned[pName] = page;
+    planned[sName] = pageSize;
+  } else if (pagination.type === "offset") {
+    planned[pName] = Math.max(0, (page - 1) * pageSize);
+    planned[sName] = pageSize;
+  }
+  // cursor: deixamos para um próximo passo (depende do cursor da resposta anterior)
+}
+
 /**
- * Executor principal:
- * - Monta request (method/url/headers/params/body) a partir da integração
- * - Chama o provedor
- * - Extrai items/total
- * - Aplica rolemap
- * - Retorna normalizado + raw
+ * Executor principal
  */
 export async function runSearch(
   integration: IntegrationLike,
@@ -149,32 +166,54 @@ export async function runSearch(
   const url = endpoint?.url;
   const timeout = (endpoint?.timeout_s || 30) * 1000;
 
-  // Query/body
-  const plannedParams = { ...(endpoint?.defaults || {}), ...(params || {}) };
+  // Query/body defaults por método
+  const defaults =
+    method === "GET"
+      ? endpoint?.default_query || endpoint?.defaults || {}
+      : endpoint?.default_body || endpoint?.defaults || {};
+
+  // Começa pelos defaults, depois params planejados e por fim filtros do modal
+  const plannedParams: Record<string, any> = {
+    ...(defaults || {}),
+    ...(params || {}),
+    ...(filtros || {})
+  };
+
+  // Aplica paginação nos nomes configuráveis
+  applyPagination(plannedParams, pagination, page, pageSize);
+
+  // Vista API: se "pesquisa" for objeto, precisa ser string JSON
+  if (
+    Object.prototype.hasOwnProperty.call(plannedParams, "pesquisa") &&
+    typeof plannedParams.pesquisa === "object"
+  ) {
+    plannedParams.pesquisa = JSON.stringify(plannedParams.pesquisa);
+  }
 
   // Logs antes da chamada
-  logger.debug({
-    ctx: "RunSearchService",
-    integrationId,
-    method,
-    url,
-    hasDefaults: !!endpoint?.defaults,
-    hasAuth: !!auth && auth.type !== "none",
-    paginationType: pagination?.type || "none",
-    page,
-    pageSize,
-    plannedParams
-  }, "calling provider");
+  logger.debug(
+    {
+      ctx: "RunSearchService",
+      integrationId,
+      method,
+      url,
+      hasDefaults:
+        !!endpoint?.default_query || !!endpoint?.default_body || !!endpoint?.defaults,
+      hasAuth: !!auth && (auth as any).type !== "none",
+      paginationType: pagination?.type || "none",
+      page,
+      pageSize,
+      plannedParams
+    },
+    "calling provider"
+  );
 
   const reqCfg: AxiosRequestConfig = {
     method,
     url,
     timeout,
     headers: { ...(endpoint?.headers || {}) },
-    // Por padrão: método GET → usa params; outros → usa data
-    ...(method === "GET"
-      ? { params: plannedParams }
-      : { data: plannedParams })
+    ...(method === "GET" ? { params: plannedParams } : { data: plannedParams })
   };
 
   // Autenticação
@@ -191,23 +230,21 @@ export async function runSearch(
     responseData = resp.data;
 
     const ms = Date.now() - t0;
-    logger.debug({
-      ctx: "RunSearchService",
-      integrationId,
-      status,
-      ms
-    }, "provider response");
+    logger.debug({ ctx: "RunSearchService", integrationId, status, ms }, "provider response");
   } catch (err: any) {
     const ms = Date.now() - t0;
     status = err?.response?.status;
-    logger.error({
-      ctx: "RunSearchService",
-      integrationId,
-      status,
-      ms,
-      error: err?.message,
-      data: err?.response?.data
-    }, "provider error");
+    logger.error(
+      {
+        ctx: "RunSearchService",
+        integrationId,
+        status,
+        ms,
+        error: err?.message,
+        data: err?.response?.data
+      },
+      "provider error"
+    );
     throw err;
   }
 
@@ -215,13 +252,16 @@ export async function runSearch(
   const { items, total } = extractFromResponse(responseData, schema);
   const normalized = normalizeItems(items, rolemap);
 
-  logger.debug({
-    ctx: "RunSearchService",
-    integrationId,
-    extractedItems: Array.isArray(items) ? items.length : 0,
-    normalizedItems: Array.isArray(normalized) ? normalized.length : 0,
-    total
-  }, "normalized result");
+  logger.debug(
+    {
+      ctx: "RunSearchService",
+      integrationId,
+      extractedItems: Array.isArray(items) ? items.length : 0,
+      normalizedItems: Array.isArray(normalized) ? normalized.length : 0,
+      total
+    },
+    "normalized result"
+  );
 
   return {
     items: normalized,
