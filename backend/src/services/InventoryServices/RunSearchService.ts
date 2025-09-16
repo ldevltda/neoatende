@@ -1,229 +1,233 @@
 // backend/src/services/InventoryServices/RunSearchService.ts
-import axios from "axios";
-import InventoryIntegration from "../../models/InventoryIntegration";
-import AppError from "../../errors/AppError";
-import { buildParamsForApi, UniversalSearchInput } from "./PlannerService";
+import axios, { AxiosRequestConfig } from "axios";
+import { logger } from "../../utils/logger";
 
 /**
- * Acesso seguro por path "a.b.c[0].d"
+ * Tipos auxiliares (ajuste se seu projeto já tiver tipos próprios)
  */
-function getByPath(obj: any, path?: string | null) {
-  if (!obj || !path) return obj;
-  const parts = path
-    .replace(/\[(\d+)\]/g, ".$1")
-    .split(".")
-    .filter(Boolean);
-  let cur: any = obj;
-  for (const p of parts) {
-    if (cur == null) return undefined;
-    cur = cur[p];
+type AuthConfig =
+  | { type: "none" }
+  | { type: "api_key"; in: "header" | "query"; name: string; prefix?: string; key: string }
+  | { type: "bearer"; token: string }
+  | { type: "basic"; username: string; password: string };
+
+type EndpointConfig = {
+  method: string;             // GET | POST | ...
+  url: string;                // URL base/rota
+  headers?: Record<string, string>;
+  defaults?: Record<string, any>; // parâmetros/body padrão
+  timeout_s?: number;
+};
+
+type PaginationConfig =
+  | { type: "none" }
+  | { type: "page"; param?: string; sizeParam?: string }
+  | { type: "offset"; param?: string; sizeParam?: string }
+  | { type: "cursor"; param?: string; cursorPath?: string; sizeParam?: string };
+
+type IntegrationLike = {
+  id: number | string;
+  get: (key: string) => any; // Sequelize model .get()
+};
+
+type RunSearchInput = {
+  params?: Record<string, any>; // query/body já planejado pelo PlannerService
+  page?: number;
+  pageSize?: number;
+  text?: string;
+  filtros?: Record<string, any>;
+};
+
+type RunSearchOutput = {
+  items: any[];
+  total?: number;
+  page?: number;
+  pageSize?: number;
+  raw?: any;
+};
+
+/** Utilitário simples para acessar paths tipo "data.items" */
+function deepGet(obj: any, path: string, fallback?: any) {
+  try {
+    if (!path) return fallback;
+    const parts = path.split(".");
+    let cur = obj;
+    for (const p of parts) {
+      if (cur == null) return fallback;
+      cur = cur[p];
+    }
+    return cur ?? fallback;
+  } catch {
+    return fallback;
   }
-  return cur;
+}
+
+/** Aplica autenticação na request (header/query) */
+function applyAuthToRequest(
+  cfg: AxiosRequestConfig,
+  auth: AuthConfig | undefined | null
+) {
+  if (!auth || auth.type === "none") return;
+
+  cfg.headers = cfg.headers || {};
+  cfg.params = cfg.params || {};
+
+  switch (auth.type) {
+    case "api_key": {
+      const value = auth.prefix ? `${auth.prefix}${auth.key}` : auth.key;
+      if (auth.in === "header") {
+        cfg.headers[auth.name] = value;
+      } else {
+        (cfg.params as any)[auth.name] = value;
+      }
+      break;
+    }
+    case "bearer": {
+      cfg.headers["Authorization"] = `Bearer ${auth.token}`;
+      break;
+    }
+    case "basic": {
+      const b64 = Buffer.from(`${auth.username}:${auth.password}`).toString("base64");
+      cfg.headers["Authorization"] = `Basic ${b64}`;
+      break;
+    }
+  }
+}
+
+/** Normaliza itens com base no rolemap (chave destino <- path origem) */
+function normalizeItems(items: any[], rolemap?: Record<string, string>): any[] {
+  if (!Array.isArray(items)) return [];
+  if (!rolemap || typeof rolemap !== "object") return items;
+
+  return items.map(src => {
+    const dst: Record<string, any> = {};
+    for (const [toKey, fromPath] of Object.entries(rolemap)) {
+      dst[toKey] = deepGet(src, String(fromPath), undefined);
+    }
+    return Object.keys(dst).length ? dst : src;
+  });
+}
+
+/** Extrai itens/total do response segundo schema básico (ajuste se usa outro padrão) */
+function extractFromResponse(
+  respData: any,
+  schema?: { itemsPath?: string; totalPath?: string }
+) {
+  // Padrão bem comum: data.items / data.total
+  const itemsPath = schema?.itemsPath || "data.items";
+  const totalPath = schema?.totalPath || "data.total";
+
+  const items = deepGet(respData, itemsPath, Array.isArray(respData) ? respData : []);
+  const total = deepGet(respData, totalPath, Array.isArray(items) ? items.length : undefined);
+
+  return { items, total };
 }
 
 /**
- * Tenta extrair a lista de itens de várias formas:
- * - via rolemap.list_path
- * - se o retorno for um objeto com chaves numéricas ("1","2",...), converte para array
- * - se for array direto, usa como está
+ * Executor principal:
+ * - Monta request (method/url/headers/params/body) a partir da integração
+ * - Chama o provedor
+ * - Extrai items/total
+ * - Aplica rolemap
+ * - Retorna normalizado + raw
  */
-function extractItems(raw: any, listPath?: string | null): any[] {
-  if (!raw) return [];
+export async function runSearch(
+  integration: IntegrationLike,
+  { params = {}, page = 1, pageSize = 10, text, filtros = {} }: RunSearchInput
+): Promise<RunSearchOutput> {
+  const integrationId = integration?.id ?? integration?.get?.("id");
 
-  // 1) path explícito
-  const byPath = getByPath(raw, listPath ?? undefined);
-  if (Array.isArray(byPath)) return byPath;
+  // Lê configs da integração
+  const endpoint: EndpointConfig = integration.get("endpoint");
+  const auth: AuthConfig = integration.get("auth");
+  const pagination: PaginationConfig = integration.get("pagination");
+  const rolemap: Record<string, string> | undefined = integration.get("rolemap");
+  const schema: { itemsPath?: string; totalPath?: string } | undefined = integration.get("schema");
 
-  // 2) Vista: objeto com itens em chaves numéricas + metadados (total, paginas, etc)
-  if (raw && typeof raw === "object") {
-    const keys = Object.keys(raw).filter(k => /^\d+$/.test(k));
-    if (keys.length) {
-      return keys
-        .sort((a, b) => Number(a) - Number(b))
-        .map(k => (raw as any)[k]);
-    }
+  // Monta a request
+  const method = (endpoint?.method || "GET").toUpperCase();
+  const url = endpoint?.url;
+  const timeout = (endpoint?.timeout_s || 30) * 1000;
+
+  // Query/body
+  const plannedParams = { ...(endpoint?.defaults || {}), ...(params || {}) };
+
+  // Logs antes da chamada
+  logger.debug({
+    ctx: "RunSearchService",
+    integrationId,
+    method,
+    url,
+    hasDefaults: !!endpoint?.defaults,
+    hasAuth: !!auth && auth.type !== "none",
+    paginationType: pagination?.type || "none",
+    page,
+    pageSize,
+    plannedParams
+  }, "calling provider");
+
+  const reqCfg: AxiosRequestConfig = {
+    method,
+    url,
+    timeout,
+    headers: { ...(endpoint?.headers || {}) },
+    // Por padrão: método GET → usa params; outros → usa data
+    ...(method === "GET"
+      ? { params: plannedParams }
+      : { data: plannedParams })
+  };
+
+  // Autenticação
+  applyAuthToRequest(reqCfg, auth);
+
+  // Chamada externa
+  const t0 = Date.now();
+  let responseData: any = null;
+  let status: number | undefined;
+
+  try {
+    const resp = await axios.request(reqCfg);
+    status = resp.status;
+    responseData = resp.data;
+
+    const ms = Date.now() - t0;
+    logger.debug({
+      ctx: "RunSearchService",
+      integrationId,
+      status,
+      ms
+    }, "provider response");
+  } catch (err: any) {
+    const ms = Date.now() - t0;
+    status = err?.response?.status;
+    logger.error({
+      ctx: "RunSearchService",
+      integrationId,
+      status,
+      ms,
+      error: err?.message,
+      data: err?.response?.data
+    }, "provider error");
+    throw err;
   }
 
-  // 3) já é array?
-  if (Array.isArray(raw)) return raw;
+  // Extração + normalização
+  const { items, total } = extractFromResponse(responseData, schema);
+  const normalized = normalizeItems(items, rolemap);
 
-  // 4) não deu — devolve vazio
-  return [];
-}
-
-/**
- * Normaliza a resposta em um formato único pro front:
- * {
- *   items: [...],
- *   total: number | undefined,
- *   pagina: number | undefined,
- *   pageSize: number | undefined,
- *   hasNext: boolean | undefined,
- *   raw?: any
- * }
- */
-function normalizeResponse(raw: any, listPath?: string | null, page?: number, pageSize?: number) {
-  const items = extractItems(raw, listPath);
-
-  // Tenta inferir metadados comuns (Vista traz total/paginas/pagina/quantidade)
-  let total: number | undefined = undefined;
-  let pagina: number | undefined = page;
-  let size: number | undefined = pageSize;
-  let hasNext: boolean | undefined = undefined;
-
-  if (raw && typeof raw === "object") {
-    if (typeof raw.total === "number") total = raw.total;
-    if (typeof raw.pagina === "number") pagina = raw.pagina;
-    if (typeof raw.quantidade === "number") size = raw.quantidade;
-    if (typeof raw.paginas === "number" && typeof pagina === "number") {
-      hasNext = pagina < raw.paginas;
-    } else if (typeof total === "number" && typeof pagina === "number" && typeof size === "number") {
-      const consumed = (pagina - 1) * size + items.length;
-      hasNext = consumed < total;
-    }
-  }
+  logger.debug({
+    ctx: "RunSearchService",
+    integrationId,
+    extractedItems: Array.isArray(items) ? items.length : 0,
+    normalizedItems: Array.isArray(normalized) ? normalized.length : 0,
+    total
+  }, "normalized result");
 
   return {
-    items,
+    items: normalized,
     total,
-    pagina,
-    pageSize: size,
-    hasNext,
-    raw,
+    page,
+    pageSize,
+    raw: responseData
   };
 }
-
-/**
- * Headers planos (Record<string,string>) para evitar conflito com AxiosHeaders.
- */
-type SimpleHeaders = Record<string, string>;
-
-/**
- * Monta headers a partir da integração.
- * Suporta: none | bearer | basic | api_key (in: header)
- */
-function buildHeaders(integ: InventoryIntegration): SimpleHeaders {
-  const h: SimpleHeaders = {
-    Accept: "application/json",
-    ...(integ.endpoint?.headers as any),
-  };
-
-  const at = (integ as any).auth as
-    | {
-        type: "none" | "api_key" | "bearer" | "basic";
-        in?: "header" | "query";
-        name?: string;
-        prefix?: string;
-        key?: string;
-        username?: string;
-        password?: string;
-      }
-    | undefined;
-
-  if (!at || at.type === "none") return h;
-
-  if (at.type === "bearer" && at.key) {
-    const prefix = at.prefix || "Bearer";
-    h["Authorization"] = `${prefix} ${at.key}`;
-  } else if (at.type === "basic" && at.username && at.password) {
-    const b64 = Buffer.from(`${at.username}:${at.password}`).toString("base64");
-    h["Authorization"] = `Basic ${b64}`;
-  } else if (at.type === "api_key" && at.in === "header" && at.name && at.key) {
-    h[at.name] = at.prefix ? `${at.prefix} ${at.key}` : at.key;
-  }
-
-  return h;
-}
-
-/**
- * Monta query/body a partir do planner + auth api_key in=query.
- */
-function buildQueryAndBody(
-  integ: InventoryIntegration,
-  input: UniversalSearchInput
-): { finalQuery: Record<string, any>; finalBody: any; page: number; pageSize: number } {
-  const { params, page, pageSize } = buildParamsForApi(
-    input,
-    (integ as any).pagination || { strategy: "none" }
-  );
-
-  const method = (integ.endpoint?.method || "GET").toUpperCase();
-
-  const finalQuery: Record<string, any> = {
-    ...(integ.endpoint?.default_query || {}),
-  };
-  const finalBody: any = method === "POST" ? { ...(integ.endpoint?.default_body || {}) } : undefined;
-
-  Object.assign(finalQuery, params);
-
-  const at = (integ as any).auth as
-    | {
-        type: "none" | "api_key" | "bearer" | "basic";
-        in?: "header" | "query";
-        name?: string;
-        prefix?: string;
-        key?: string;
-      }
-    | undefined;
-
-  if (at?.type === "api_key" && at.in === "query" && at.name && at.key) {
-    finalQuery[at.name] = at.prefix ? `${at.prefix} ${at.key}` : at.key;
-  }
-
-  return { finalQuery, finalBody, page, pageSize };
-}
-
-/**
- * Executa a busca na API externa conforme a integração salva.
- */
-export async function runSearch(integ: InventoryIntegration, input: UniversalSearchInput) {
-  if (!integ?.endpoint?.url) throw new AppError("Integration missing endpoint URL", 400);
-
-  const method = (integ.endpoint.method || "GET").toUpperCase();
-  const timeout = (integ.endpoint.timeout_s || 8) * 1000;
-
-  const headers = buildHeaders(integ);
-  const { finalQuery, finalBody, page, pageSize } = buildQueryAndBody(integ, input);
-
-  // Monta URL com query
-  const baseUrl = new URL(integ.endpoint.url);
-  // Preserva query que já existir na URL
-  baseUrl.searchParams.forEach((v, k) => {
-    // mantemos os existentes; se vierem em finalQuery, sobrescrevem abaixo
-  });
-  Object.entries(finalQuery).forEach(([k, v]) => {
-    // Se o valor for objeto/array, serializa em JSON (Vista aceita JSON em query)
-    if (v !== null && typeof v === "object") {
-      baseUrl.searchParams.set(k, JSON.stringify(v));
-    } else if (v !== undefined) {
-      baseUrl.searchParams.set(k, String(v));
-    }
-  });
-
-  const axiosCfg = {
-    method: method as any,
-    url: baseUrl.toString(),
-    timeout,
-    headers, // objeto plano
-    data: method === "POST" ? finalBody : undefined,
-    // Não lançar erro por status != 2xx — deixamos para tratar manualmente
-    validateStatus: () => true,
-  };
-
-  const resp = await axios(axiosCfg);
-
-  if (resp.status >= 400) {
-    const msg =
-      (resp.data && (resp.data.message || resp.data.error)) ||
-      `Upstream error (${resp.status})`;
-    throw new AppError(`Inventory upstream: ${msg}`, 502);
-  }
-
-  // Normaliza
-  const listPath = ((integ as any).rolemap?.list_path as string | null) ?? null;
-  const normalized = normalizeResponse(resp.data, listPath, page, pageSize);
-
-  return normalized;
-}
-
-export default runSearch;

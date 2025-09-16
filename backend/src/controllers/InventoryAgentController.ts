@@ -3,12 +3,12 @@ import { Request, Response } from "express";
 import InventoryIntegration from "../models/InventoryIntegration";
 import { buildParamsForApi } from "../services/InventoryServices/PlannerService";
 import { runSearch } from "../services/InventoryServices/RunSearchService";
+import { logger } from "../utils/logger";
 
 /**
  * Executa uma consulta em integrações cadastradas.
  * - Se "integrationId" for informado: usa diretamente essa integração (verificando companyId).
- * - Caso contrário: resolve pela primeira integração disponível dessa empresa.
- *   (Se quiser o resolver por intenção/categoria depois, a gente pluga por aqui.)
+ * - Caso contrário: usa a primeira integração da empresa (ou plugue um resolver por intenção no futuro).
  *
  * Body:
  * {
@@ -21,6 +21,7 @@ import { runSearch } from "../services/InventoryServices/RunSearchService";
  * }
  */
 export const agentLookup = async (req: Request, res: Response) => {
+  const start = Date.now();
   try {
     const {
       integrationId,
@@ -29,60 +30,72 @@ export const agentLookup = async (req: Request, res: Response) => {
       page = 1,
       pageSize = 10,
       companyId: companyIdFromBody
-    }: {
-      integrationId?: number;
-      text?: string;
-      filtros?: Record<string, any>;
-      page?: number;
-      pageSize?: number;
-      companyId?: number;
     } = (req.body || {}) as any;
 
     const companyId = (req as any)?.user?.companyId ?? companyIdFromBody;
+
+    logger.info({
+      ctx: "AgentLookup",
+      companyId,
+      integrationId,
+      text,
+      filtros,
+      page,
+      pageSize
+    }, "incoming agent lookup");
+
     if (!companyId) {
-      return res.status(400).json({
-        error: "CompanyIdMissing",
-        message: "companyId não encontrado no token nem no corpo da requisição."
-      });
+      logger.warn({ ctx: "AgentLookup" }, "companyId missing");
+      return res.status(400).json({ error: "CompanyIdMissing" });
     }
 
-    // 1) escolher integração
     let integ: InventoryIntegration | null = null;
 
     if (integrationId) {
       integ = await InventoryIntegration.findOne({ where: { id: integrationId, companyId } });
       if (!integ) {
-        return res.status(404).json({
-          error: "IntegrationNotFound",
-          message: `Integração ${integrationId} não encontrada para esta empresa.`
-        });
+        logger.warn({ ctx: "AgentLookup", companyId, integrationId }, "integration not found");
+        return res.status(404).json({ error: "IntegrationNotFound" });
       }
     } else {
-      // fallback simples: pega a primeira integração da empresa
-      integ = await InventoryIntegration.findOne({ where: { companyId }, order: [["id", "ASC"]] });
+      integ = await InventoryIntegration.findOne({ where: { companyId }, order: [["id","ASC"]] });
       if (!integ) {
-        return res.status(404).json({
-          error: "NoIntegrationForCompany",
-          message: "Nenhuma integração cadastrada para esta empresa."
-        });
+        logger.warn({ ctx: "AgentLookup", companyId }, "no integrations for company");
+        return res.status(404).json({ error: "NoIntegrationForCompany" });
       }
     }
 
-    // 2) montar params conforme config de paginação da integração
+    logger.info({
+      ctx: "AgentLookup",
+      integrationId: integ.get("id"),
+      integrationName: integ.get("name")
+    }, "picked integration");
+
     const planned = buildParamsForApi(
       { text, filtros, paginacao: { page, pageSize } },
       (integ as any).pagination
     );
     const params = (planned && (planned as any).params) || {};
 
-    // 3) executar e normalizar
-    const out = await runSearch(integ as any, {
-      params,
-      page,
-      pageSize,
-      text,
-      filtros
-    } as any);
+    logger.debug({
+      ctx: "AgentLookup",
+      integrationId: integ.get("id"),
+      plannedParams: params
+    }, "planned params");
+
+    const t0 = Date.now();
+    const out = await runSearch(integ as any, { params, page, pageSize, text, filtros } as any);
+    const took = Date.now() - t0;
+
+    logger.info({
+      ctx: "AgentLookup",
+      integrationId: integ.get("id"),
+      tookMs: took,
+      total: out?.total ?? out?.items?.length ?? 0
+    }, "runSearch done");
+
+    const totalMs = Date.now() - start;
+    logger.info({ ctx: "AgentLookup", totalMs }, "lookup finished");
 
     return res.json({
       companyId,
@@ -93,10 +106,7 @@ export const agentLookup = async (req: Request, res: Response) => {
       ...out
     });
   } catch (err: any) {
-    console.error("agentLookup error:", err);
-    return res.status(500).json({
-      error: "AgentLookupFailed",
-      message: err?.message || "Falha ao executar consulta de integração."
-    });
+    logger.error({ ctx: "AgentLookup", err }, "lookup error");
+    return res.status(500).json({ error: "AgentLookupFailed", message: err?.message });
   }
 };

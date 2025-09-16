@@ -1,61 +1,90 @@
-/**
- * Transforma a requisição universal (texto + filtros) em params/body para a API.
- * - Mantém compatibilidade com paginação top-level (page/limit) e offset.
- * - Se existir um campo `pesquisa` (string JSON do Vista, por ex.), injeta
- *   `paginacao.pagina` e `paginacao.quantidade` dentro dele.
- * - Não interfere na autenticação (isso fica para o executor),
- *   mas monta params robustos para GET/POST.
- */
+// backend/src/services/InventoryServices/PlannerService.ts
+import { logger } from "../../utils/logger";
 
-export type UniversalSearchInput = {
+/**
+ * Tipos auxiliares (ajuste se você já possui tipos próprios)
+ */
+type PaginationConfig =
+  | { type: "none" }
+  | { type: "page"; param?: string; sizeParam?: string }
+  | { type: "offset"; param?: string; sizeParam?: string }
+  | { type: "cursor"; param?: string; cursorPath?: string; sizeParam?: string };
+
+type BuildInput = {
   text?: string;
   filtros?: Record<string, any>;
   paginacao?: { page?: number; pageSize?: number };
-  ordenacao?: { campo?: string; direcao?: "asc" | "desc" };
 };
 
+/**
+ * Constrói o objeto de parâmetros (query/body) a ser enviado à API externa,
+ * respeitando a configuração de paginação da integração.
+ *
+ * Retorna um objeto com a forma:
+ * {
+ *   params: { ... }  // pronto para ir no query (GET) ou body (POST)
+ * }
+ */
 export function buildParamsForApi(
-  input: UniversalSearchInput,
-  paginationCfg: {
-    strategy: "none" | "page" | "offset" | "cursor";
-    page_param?: string;
-    size_param?: string;
-    offset_param?: string;
-    page_size_default?: number;
+  input: BuildInput,
+  pagination?: PaginationConfig
+): { params: Record<string, any> } {
+  const text = input?.text || "";
+  const filtros = input?.filtros || {};
+  const page = input?.paginacao?.page ?? 1;
+  const pageSize = input?.paginacao?.pageSize ?? 10;
+
+  // Base de parâmetros: usamos 'text' e 'filtros' como insumos universais.
+  // Seu mapeamento específico (ex.: filtros.bairro -> API.XYZParam) normalmente fica no rolemap/config;
+  // aqui só repassamos direto. Se precisar, adapte para renomear chaves.
+  const params: Record<string, any> = {
+    ...(text ? { q: text } : {}), // opcional: convenciona 'q' como texto livre
+    ...filtros
+  };
+
+  // Aplica paginação conforme config
+  switch (pagination?.type) {
+    case "page": {
+      const pageParam = pagination.param || "page";
+      const sizeParam = pagination.sizeParam || "pageSize";
+      params[pageParam] = page;
+      params[sizeParam] = pageSize;
+      break;
+    }
+    case "offset": {
+      const offsetParam = pagination.param || "offset";
+      const sizeParam = pagination.sizeParam || "limit";
+      params[offsetParam] = (Math.max(page, 1) - 1) * pageSize;
+      params[sizeParam] = pageSize;
+      break;
+    }
+    case "cursor": {
+      const cursorParam = pagination.param || "cursor";
+      const sizeParam = pagination.sizeParam || "limit";
+      // Aqui assumimos que o cursor virá em filtros.cursor ou algo similar; se não vier, ignora.
+      if (typeof filtros?.cursor !== "undefined") {
+        params[cursorParam] = filtros.cursor;
+      }
+      params[sizeParam] = pageSize;
+      break;
+    }
+    case "none":
+    default:
+      // sem paginação
+      break;
   }
-) {
-  const page = input?.paginacao?.page || 1;
-  const pageSize = input?.paginacao?.pageSize || paginationCfg.page_size_default || 20;
 
-  const params: Record<string, any> = { ...(input?.filtros || {}) };
+  // LOG: parâmetros finais planejados
+  logger.debug(
+    {
+      ctx: "PlannerService",
+      paginationType: pagination?.type || "none",
+      page,
+      pageSize,
+      builtParams: params
+    },
+    "planned params for provider"
+  );
 
-  // Se o provedor utiliza `pesquisa` (Vista), e ela vier como string JSON,
-  // vamos injetar a paginação dentro desse objeto.
-  if (typeof params.pesquisa === "string" && params.pesquisa.trim().startsWith("{")) {
-    try {
-      const p = JSON.parse(params.pesquisa);
-      p.paginacao = {
-        ...(p.paginacao || {}),
-        pagina: String(page),
-        quantidade: String(pageSize)
-      };
-      params.pesquisa = JSON.stringify(p);
-    } catch {
-      // se não deu pra parsear, segue o fluxo padrão
-    }
-  } else {
-    // Paginação padrão em query top-level, quando configurada
-    if (paginationCfg.strategy === "page" && paginationCfg.page_param && paginationCfg.size_param) {
-      params[paginationCfg.page_param] = page;
-      params[paginationCfg.size_param] = pageSize;
-    }
-    if (paginationCfg.strategy === "offset" && paginationCfg.offset_param) {
-      params[paginationCfg.offset_param] = (page - 1) * pageSize;
-      if (paginationCfg.size_param) params[paginationCfg.size_param] = pageSize;
-    }
-  }
-
-  if (input?.text && !params["q"]) params["q"] = input.text;
-
-  return { params, page, pageSize };
+  return { params };
 }
