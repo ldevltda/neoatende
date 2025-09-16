@@ -1,6 +1,4 @@
 import path, { join } from "path";
-import { promisify } from "util";
-import { readFile, writeFile } from "fs";
 import * as Sentry from "@sentry/node";
 import { isNil, isNull, head } from "lodash";
 import { extension as mimeExtension } from "mime-types";
@@ -104,8 +102,6 @@ interface IMessage {
 }
 
 export const isNumeric = (value: string) => /^-?\d+$/.test(value);
-
-const writeFileAsync = promisify(writeFile);
 
 const getTypeMessage = (msg: proto.IWebMessageInfo): string => {
   return getContentType(msg.message);
@@ -485,13 +481,18 @@ const getContactMessage = async (msg: proto.IWebMessageInfo, wbot: Session) => {
 };
 
 const downloadMedia = async (msg: proto.IWebMessageInfo) => {
- let buffer: Buffer;
+ let buffer: Buffer | undefined;
   try {
     buffer = await downloadMediaMessage(msg, "buffer", {});
   } catch (err) {
     console.error("Erro ao baixar mídia:", err);
 
     // Trate o erro de acordo com as suas necessidades
+  }
+
+  if (!buffer) {
+    // em cenários raros pode vir vazio; evita crash adiante
+    buffer = Buffer.alloc(0);
   }
 
   let filename = msg.message?.documentMessage?.fileName || "";
@@ -896,19 +897,16 @@ export const verifyMediaMessage = async (
   }
 
   try {
-    await writeFileAsync(
-      join(__dirname, "..", "..", "..", "public", media.filename),
-      media.data as NodeJS.ArrayBufferView
-    );
+    const fullPath = join(__dirname, "..", "..", "..", "public", media.filename);
+    await fs.promises.writeFile(fullPath, media.data as Buffer);
   } catch (err) {
     Sentry.captureException(err);
     logger.error(err);
   }
 
   const body = getBodyMessage(msg);
-
   const hasCap = hasCaption(body, media.filename);
-  const bodyMessage = body ? hasCap ? formatBody(body, ticket.contact) : "-" : "-";
+  const bodyMessage = body ? (hasCap ? formatBody(body, ticket.contact) : "-") : "-";
 
   const messageData = {
     id: msg.key.id,
@@ -924,12 +922,10 @@ export const verifyMediaMessage = async (
     remoteJid: msg.key.remoteJid,
     participant: msg.key.participant,
     dataJson: JSON.stringify(msg),
-    ticketTrakingId: ticketTraking?.id,
+    ticketTrakingId: ticketTraking?.id
   };
 
-  await ticket.update({
-    lastMessage: body || "Arquivo de mídia"
-  });
+  await ticket.update({ lastMessage: body || "Arquivo de mídia" });
 
   const newMessage = await CreateMessageService({
     messageData,
