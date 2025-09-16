@@ -2,6 +2,7 @@
 import InventoryIntegration from "../../models/InventoryIntegration";
 import { httpRequest } from "./httpClient";
 import { logger } from "../../utils/logger";
+import { inferRolemapWithOpenAI, OpenAIRolemapResult } from "./OpenAIRolemapService";
 
 /**
  * Tipos frouxos para aceitar as duas variantes de configuração presentes no projeto.
@@ -159,8 +160,8 @@ export async function fetchSamplesAndInfer(integ: InventoryIntegration) {
   };
 
   // Auth genérico
-  if (auth && auth.type && auth.type !== "none") {
-    if (auth.type === "api_key" && (auth as any).in && (auth as any).name && (auth as any).key) {
+  if (auth && (auth as any).type && (auth as any).type !== "none") {
+    if ((auth as any).type === "api_key" && (auth as any).in && (auth as any).name && (auth as any).key) {
       const keyVal = (auth as any).prefix ? `${(auth as any).prefix}${(auth as any).key}` : (auth as any).key;
       if ((auth as any).in === "header") {
         baseConfig.headers[(auth as any).name] = keyVal;
@@ -168,13 +169,13 @@ export async function fetchSamplesAndInfer(integ: InventoryIntegration) {
         baseConfig.params = baseConfig.params || {};
         baseConfig.params[(auth as any).name] = keyVal;
       }
-    } else if (auth.type === "bearer") {
+    } else if ((auth as any).type === "bearer") {
       const token = (auth as any).token ?? (auth as any).key;
       if (token) {
         const prefix = (auth as any).prefix ?? "Bearer ";
         baseConfig.headers["Authorization"] = `${prefix}${token}`;
       }
-    } else if (auth.type === "basic") {
+    } else if ((auth as any).type === "basic") {
       const { username, password } = auth as any;
       if (username && password) {
         const b64 = Buffer.from(`${username}:${password}`).toString("base64");
@@ -266,4 +267,98 @@ export async function fetchSamplesAndInfer(integ: InventoryIntegration) {
     totalPathCandidates,   // sugestões para schema.totalPath
     sampleItem             // útil para a UI exibir
   };
+}
+
+/** ————— Tipos do rolemap interno (o que vai pro InventoryIntegration.rolemap) ————— */
+export type NormalizedRolemap = {
+  listPath: string;                         // ex.: "raw" ou "data.items"
+  fields: Record<string, { path: string }>; // ex.: { title: { path: "TituloSite" } }
+  totalPath?: string;                       // opcional
+};
+
+/** Converte o retorno da OpenAI (dinâmico) para o shape interno que salvamos. */
+function normalizeFromAI(
+  ai: OpenAIRolemapResult,
+  fallbackListPath: string | null,
+  fallbackTotalPath?: string
+): NormalizedRolemap {
+  const fields: Record<string, { path: string }> = {};
+  const src = ai.rolemap || {};
+
+  for (const [k, v] of Object.entries(src)) {
+    if (typeof v === "string" && v.trim()) {
+      fields[k.trim()] = { path: v.trim() };
+    }
+  }
+
+  const listPath = ai.itemsPath || fallbackListPath || "data.items";
+  const totalPath = ai.totalPath || fallbackTotalPath;
+
+  return { listPath, fields, totalPath };
+}
+
+/**
+ * ————— Gera rolemap com OpenAI a partir da amostra —————
+ * NÃO persiste. Retorna o resultado cru da OpenAI (será normalizado depois).
+ */
+export async function generateRolemapWithOpenAI(args: {
+  sampleItem: any;
+  samples?: any[];
+  categoryHint?: string;
+  itemsPathSuggestion?: string | null;
+  totalPathCandidates?: string[];
+}): Promise<OpenAIRolemapResult> {
+  const { sampleItem, samples, categoryHint, itemsPathSuggestion, totalPathCandidates } = args;
+
+  const ai = await inferRolemapWithOpenAI({
+    sampleItem,
+    samples,
+    categoryHint,
+    itemsPathSuggestion: itemsPathSuggestion || undefined,
+    totalPathCandidates
+  });
+
+  return ai;
+}
+
+/**
+ * ————— Fluxo completo para a UI do "Inferir" —————
+ * 1) Busca samples;
+ * 2) Gera rolemap com OpenAI usando a 1ª amostra;
+ * 3) (Opcional) Salva no integration.rolemap se for pedido;
+ */
+export async function runInferAndMaybePersist(
+  integ: InventoryIntegration,
+  opts?: { persist?: boolean }
+): Promise<{
+  samples: any[];
+  skeleton: any;
+  firstArrayPath: string | null;
+  totalPathCandidates: string[];
+  sampleItem: any;
+  rolemap: NormalizedRolemap;
+}> {
+  const { samples, skeleton, firstArrayPath, totalPathCandidates, sampleItem } = await fetchSamplesAndInfer(integ);
+
+  const categoryHint = (integ as any).categoryHint || readCfg<string>(integ, "categoryHint");
+
+  // 1) Pede para a OpenAI inferir (dinâmico, nada fixo)
+  const ai = await generateRolemapWithOpenAI({
+    sampleItem,
+    samples,
+    categoryHint,
+    itemsPathSuggestion: firstArrayPath,
+    totalPathCandidates
+  });
+
+  // 2) Normaliza pro shape que salvamos (usando fallbacks heurísticos)
+  const rolemap = normalizeFromAI(ai, firstArrayPath, totalPathCandidates?.[0]);
+
+  // 3) Opcionalmente persiste
+  if (opts?.persist) {
+    (integ as any).rolemap = rolemap;
+    await (integ as any).save?.();
+  }
+
+  return { samples, skeleton, firstArrayPath, totalPathCandidates, sampleItem, rolemap };
 }

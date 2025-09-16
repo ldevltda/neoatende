@@ -1,8 +1,8 @@
 import { Request, Response } from "express";
 import InventoryIntegration from "../models/InventoryIntegration";
-import { fetchSamplesAndInfer } from "../services/InventoryServices/InferSchemaService";
 import { runSearch, RunSearchOutput } from "../services/InventoryServices/RunSearchService";
 import { logger } from "../utils/logger";
+import { runInferAndMaybePersist } from "../services/InventoryServices/InferSchemaService";
 
 function resolveCompanyId(req: Request, bodyCompanyId?: number) {
   return (req as any)?.user?.companyId ?? bodyCompanyId;
@@ -62,6 +62,7 @@ export const inferIntegration = async (req: Request, res: Response) => {
 
     const integrationId = idFromParam ?? idFromBody;
     const companyId = resolveCompanyId(req, companyIdFromBody);
+
     if (!companyId || !integrationId) {
       return res.status(400).json({ error: "MissingParams", message: "companyId/integrationId are required" });
     }
@@ -69,27 +70,45 @@ export const inferIntegration = async (req: Request, res: Response) => {
     const integ = await InventoryIntegration.findOne({ where: { id: integrationId, companyId } });
     if (!integ) return res.status(404).json({ error: "IntegrationNotFound" });
 
-    const result = await fetchSamplesAndInfer(integ);
+    // Usa o fluxo novo que:
+    // 1) coleta samples, 2) pede rolemap pra OpenAI, 3) opcionalmente persiste
+    const {
+      samples,
+      skeleton,
+      firstArrayPath,
+      totalPathCandidates,
+      sampleItem,
+      rolemap
+    } = await runInferAndMaybePersist(integ, { persist: !!save });
 
+    // Mantém o comportamento anterior para "schemaSuggestion" (sem quebrar nada)
     const schemaSuggestion = {
-      itemsPath: result.firstArrayPath || "data.items",
-      totalPath: result.totalPathCandidates?.[0] || undefined
+      itemsPath: firstArrayPath || "data.items",
+      totalPath: totalPathCandidates?.[0] || undefined
     };
 
-    if (save) {
-      await (integ as any).update({ schema: schemaSuggestion });
-      logger.info({ ctx: "InventoryController.inferIntegration", integrationId, savedSchema: schemaSuggestion }, "schema inferred and saved");
-    }
+    logger.info(
+      {
+        ctx: "InventoryController.inferIntegration",
+        integrationId,
+        saved: !!save,
+        itemsPath: schemaSuggestion.itemsPath,
+        totalPath: schemaSuggestion.totalPath,
+        rolemapListPath: rolemap?.listPath
+      },
+      "infer finished"
+    );
 
     return res.json({
       ok: true,
       integrationId,
       saved: !!save,
       schemaSuggestion,
-      totalPathCandidates: result.totalPathCandidates,
-      skeleton: result.skeleton,
-      sampleItem: result.sampleItem,
-      samplesCount: result.samples?.length ?? 0
+      totalPathCandidates,
+      skeleton,
+      sampleItem,
+      samplesCount: samples?.length ?? 0,
+      rolemap // <- já normalizado e (se save=true) já salvo no integration.rolemap
     });
   } catch (err: any) {
     logger.error({ ctx: "InventoryController.inferIntegration", err }, "infer error");
