@@ -6,7 +6,7 @@ import Message from "../../models/Message";
 import Ticket from "../../models/Ticket";
 import formatBody from "../../helpers/Mustache";
 
-// ✅ service de criação (já em seu projeto)
+// service de criação já existente no projeto
 import CreateMessageService from "../MessageServices/CreateMessageService";
 
 interface Request {
@@ -46,37 +46,36 @@ const SendWhatsAppMessage = async ({
 
     // envia
     const text = formatBody(body, ticket.contact);
-    const sentMessage = await wbot.sendMessage(
-      jid,
-      { text },
-      { ...options }
-    );
+    const sentMessage = await wbot.sendMessage(jid, { text }, { ...options });
 
-    // 🔸 Persistência imediata em "Messages"
-    const messageId =
+    // dados para persistir
+    const waId =
       sentMessage?.key?.id || (sentMessage as any)?.messageID || `${Date.now()}`;
 
-    const payload: any = {
-      id: messageId,
+    const payload = {
+      // ⚠️ se você ainda não criou coluna waId, pode remover essa linha:
+      waId,                           // <- manter se já criou waId
+      id: waId,                       // provisório enquanto a PK == id do WhatsApp
       ticketId: ticket.id,
       contactId: ticket.contactId,
       body: text,
       fromMe: true,
       read: false,
       mediaType: "chat",
-      mediaUrl: null,
-      ack: 1, // 1 = enviado/aceito pelo servidor (você pode evoluir com updates de ack)
+      mediaUrl: null as string | null,
+      ack: 1,
       queueId: ticket.queueId ?? null,
-      // extras úteis para debug/quote futuro
-      remoteJid: sentMessage?.key?.remoteJid ?? jid,
-      dataJson: JSON.stringify(sentMessage)
+      remoteJid: sentMessage?.key?.remoteJid ?? jid,   // campo extra, opcional no seu tipo
+      dataJson: JSON.stringify(sentMessage)            // campo extra, opcional no seu tipo
     };
 
-    // TypeScript do seu CreateMessageService não tem remoteJid/dataJson tipado,
-    // então fazemos cast para não quebrar o build:
+    // 👇 AQUI ESTAVA O ERRO: não use "messageData: payload"
+    // Passe tudo "espalhado" + companyId.
+    // Se o type do CreateMessageService não tipa remoteJid/dataJson,
+    // fazemos um cast leve para não travar o build.
     await CreateMessageService({
-      companyId: ticket.companyId,
-      messageData: payload as any
+      ...(payload as any),
+      companyId: ticket.companyId
     });
 
     await ticket.update({ lastMessage: text });

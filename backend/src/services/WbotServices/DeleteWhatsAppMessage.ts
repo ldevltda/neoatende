@@ -7,13 +7,10 @@ import Message from "../../models/Message";
 import Ticket from "../../models/Ticket";
 
 const DeleteWhatsAppMessage = async (messageId: string): Promise<Message> => {
-  const message = await Message.findByPk(messageId, {
+  const message = await Message.findOne({
+    where: { waId: messageId },
     include: [
-      {
-        model: Ticket,
-        as: "ticket",
-        include: ["contact"]
-      }
+      { model: Ticket, as: "ticket", include: ["contact"] }
     ]
   });
 

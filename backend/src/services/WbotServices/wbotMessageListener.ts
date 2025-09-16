@@ -561,7 +561,7 @@ const verifyQuotedMessage = async (
   if (!quoted) return null;
 
   const quotedMsg = await Message.findOne({
-    where: { id: quoted }
+    where: { waId: quoted }
   });
 
   if (!quotedMsg) return null;
@@ -909,6 +909,7 @@ export const verifyMediaMessage = async (
   const bodyMessage = body ? (hasCap ? formatBody(body, ticket.contact) : "-") : "-";
 
   const messageData = {
+    waId: msg.key.id,
     id: msg.key.id,
     ticketId: ticket.id,
     contactId: msg.key.fromMe ? undefined : contact.id,
@@ -927,8 +928,8 @@ export const verifyMediaMessage = async (
 
   await ticket.update({ lastMessage: body || "Arquivo de mídia" });
 
-  const newMessage = await CreateMessageService({
-    messageData,
+ const newMessage = await CreateMessageService({
+    ...messageData,
     companyId: ticket.companyId
   });
 
@@ -974,6 +975,7 @@ export const verifyMessage = async (
   const isEdited = getTypeMessage(msg) == "editedMessage";
 
   const messageData = {
+    waId: msg.key.id,
     id: isEdited
       ? msg?.message?.editedMessage?.message?.protocolMessage?.key?.id
       : msg.key.id,
@@ -995,7 +997,7 @@ export const verifyMessage = async (
     lastMessage: body
   });
 
-  await CreateMessageService({ messageData, companyId: ticket.companyId });
+  await CreateMessageService({ ...messageData, companyId: ticket.companyId });
 
   if (!msg.key.fromMe && ticket.status === "closed") {
     await ticket.update({ status: "pending" });
@@ -2877,7 +2879,8 @@ const handleMsgAck = async (
   const io = getIO();
 
   try {
-    const messageToUpdate = await Message.findByPk(msg.key.id, {
+    const messageToUpdate = await Message.findOne({
+      where: { waId: msg.key.id },
       include: [
         "contact",
         {
@@ -2912,7 +2915,7 @@ const verifyCampaignMessageAndCloseTicket = async (
   const isCampaign = /\u200c/.test(body);
   if (message.key.fromMe && isCampaign) {
     const messageRecord = await Message.findOne({
-      where: { id: message.key.id!, companyId }
+      where: { waId: message.key.id!, companyId }
     });
     const ticket = await Ticket.findByPk(messageRecord.ticketId);
     await ticket.update({ status: "closed" });
@@ -2966,7 +2969,7 @@ const wbotMessageListener = async (
 
       for (const message of messages) {
         const messageExists = await Message.count({
-          where: { id: message.key.id!, companyId }
+          where: { waId: message.key.id!, companyId }
         });
 
         if (!messageExists) {
