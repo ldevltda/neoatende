@@ -31,7 +31,7 @@ export async function createIntegration(payload) {
   return data;
 }
 
-// 🔹 POST – IA infere schema
+// 🔹 POST – IA infere schema (agora persistindo tudo)
 export async function inferIntegration(id) {
   const { data } = await api.post(`/inventory/integrations/${id}/infer`, { save: true });
   return data;

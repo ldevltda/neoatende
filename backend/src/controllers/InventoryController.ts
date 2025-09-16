@@ -70,25 +70,20 @@ export const inferIntegration = async (req: Request, res: Response) => {
     const integ = await InventoryIntegration.findOne({ where: { id: integrationId, companyId } });
     if (!integ) return res.status(404).json({ error: "IntegrationNotFound" });
 
-    // Usa o fluxo novo que:
-    // 1) coleta samples, 2) pede rolemap pra OpenAI, 3) opcionalmente persiste
     const {
-      samples, skeleton, firstArrayPath, totalPathCandidates, sampleItem, rolemap
+      samples, skeleton, firstArrayPath, totalPathCandidates, sampleItem, rolemap,
+      suggestedSchema, suggestedPagination
     } = await runInferAndMaybePersist(integ, { persist: !!save });
-
-    // Mantém o comportamento anterior para "schemaSuggestion" (sem quebrar nada)
-    const schemaSuggestion = {
-      itemsPath: firstArrayPath || "data.items",
-      totalPath: totalPathCandidates?.[0] || undefined
-    };
 
     logger.info(
       {
         ctx: "InventoryController.inferIntegration",
         integrationId,
         saved: !!save,
-        itemsPath: schemaSuggestion.itemsPath,
-        totalPath: schemaSuggestion.totalPath,
+        firstArrayPath,
+        itemsPath: suggestedSchema.itemsPath,
+        totalPath: suggestedSchema.totalPath,
+        pagination: suggestedPagination,
         rolemapListPath: rolemap?.listPath
       },
       "infer finished"
@@ -100,15 +95,15 @@ export const inferIntegration = async (req: Request, res: Response) => {
         : integ;
 
     return res.json({
-        ...((integOut as any)?.get ? (integOut as any).get({ plain: true }) : integOut),
-        saved: !!save,
-        schemaSuggestion,
-        totalPathCandidates,
-        skeleton,
-        sampleItem,
-        samplesCount: samples?.length ?? 0,
-        rolemap
-      });
+      ...((integOut as any)?.get ? (integOut as any).get({ plain: true }) : integOut),
+      saved: !!save,
+      schemaSuggestion: suggestedSchema,
+      totalPathCandidates,
+      skeleton,
+      sampleItem,
+      samplesCount: samples?.length ?? 0,
+      rolemap
+    });
   } catch (err: any) {
     logger.error({ ctx: "InventoryController.inferIntegration", err }, "infer error");
     return res.status(500).json({ error: "InferFailed", message: err?.message });

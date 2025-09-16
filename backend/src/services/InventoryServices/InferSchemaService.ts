@@ -128,9 +128,9 @@ function inferSchemaSkeleton(payload: any) {
  * Busca 1–2 amostras do endpoint e retorna:
  * - samples: payloads brutos
  * - skeleton: estrutura de tipos
- * - firstArrayPath: onde parece estar a lista de itens
+ * - firstArrayPath: onde parece estar a lista de itens (quando é array de fato)
  * - totalPathCandidates: possíveis caminhos de total
- * - sampleItem: primeiro item do array encontrado (se houver)
+ * - sampleItem: primeiro item candidato (array OU dicionário com chaves numéricas)
  *
  * NÃO persiste nada. Sem nada fixo de provedor.
  */
@@ -159,8 +159,8 @@ export async function fetchSamplesAndInfer(integ: InventoryIntegration) {
   };
 
   // Auth genérico
-  if (auth && auth.type && auth.type !== "none") {
-    if (auth.type === "api_key" && (auth as any).in && (auth as any).name && (auth as any).key) {
+  if (auth && (auth as any).type && (auth as any).type !== "none") {
+    if ((auth as any).type === "api_key" && (auth as any).in && (auth as any).name && (auth as any).key) {
       const keyVal = (auth as any).prefix ? `${(auth as any).prefix}${(auth as any).key}` : (auth as any).key;
       if ((auth as any).in === "header") {
         baseConfig.headers[(auth as any).name] = keyVal;
@@ -168,13 +168,13 @@ export async function fetchSamplesAndInfer(integ: InventoryIntegration) {
         baseConfig.params = baseConfig.params || {};
         baseConfig.params[(auth as any).name] = keyVal;
       }
-    } else if (auth.type === "bearer") {
+    } else if ((auth as any).type === "bearer") {
       const token = (auth as any).token ?? (auth as any).key;
       if (token) {
         const prefix = (auth as any).prefix ?? "Bearer ";
         baseConfig.headers["Authorization"] = `${prefix}${token}`;
       }
-    } else if (auth.type === "basic") {
+    } else if ((auth as any).type === "basic") {
       const { username, password } = auth as any;
       if (username && password) {
         const b64 = Buffer.from(`${username}:${password}`).toString("base64");
@@ -234,6 +234,7 @@ export async function fetchSamplesAndInfer(integ: InventoryIntegration) {
   const firstArrayPath = findFirstArrayPath(payload, "data");
   const totalPathCandidates = collectTotalPathCandidates(payload);
 
+  // sampleItem: array OU dicionário com chaves numéricas
   let sampleItem: any = null;
   if (firstArrayPath) {
     try {
@@ -242,6 +243,10 @@ export async function fetchSamplesAndInfer(integ: InventoryIntegration) {
         .reduce((acc: any, k) => (acc ? acc[k] : undefined), payload);
       if (Array.isArray(arr) && arr.length) sampleItem = arr[0];
     } catch {}
+  } else if (payload && typeof payload === "object") {
+    const keys = Object.keys(payload);
+    const numKey = keys.find(k => /^\d+$/.test(k));
+    if (numKey) sampleItem = (payload as any)[numKey];
   }
 
   const skeleton = inferSchemaSkeleton(payload);
@@ -293,7 +298,7 @@ export async function generateRolemapWithOpenAI(samplePayload: any, categoryHint
  * Fluxo completo para a UI do "Inferir":
  * 1) Busca samples;
  * 2) Gera rolemap com OpenAI usando a 1ª amostra;
- * 3) (Opcional) Salva no integration.rolemap se for pedido;
+ * 3) (Opcional) Salva no integration.rolemap/schema/pagination se for pedido;
  */
 export async function runInferAndMaybePersist(
   integ: InventoryIntegration,
@@ -305,6 +310,8 @@ export async function runInferAndMaybePersist(
   totalPathCandidates: string[];
   sampleItem: any;
   rolemap: NormalizedRolemap;
+  suggestedSchema: { itemsPath: string; totalPath?: string };
+  suggestedPagination: any;
 }> {
   const { samples, skeleton, firstArrayPath, totalPathCandidates, sampleItem } =
     await fetchSamplesAndInfer(integ);
@@ -317,16 +324,34 @@ export async function runInferAndMaybePersist(
 
   const rolemap = await generateRolemapWithOpenAI(samplePayload, categoryHint);
 
+  // Detecta “dicionário numerado” (ex.: Vista)
+  const rootKeys = samplePayload && typeof samplePayload === "object" ? Object.keys(samplePayload) : [];
+  const looksLikeNumberedObject = rootKeys.filter(k => /^\d+$/.test(k)).length >= 3;
+
   // 🔹 Sugerir schema a partir das amostras
   const suggestedSchema = {
-    itemsPath: firstArrayPath || "data.items",
-    totalPath: totalPathCandidates?.[0] || undefined
+    itemsPath: firstArrayPath
+      ? firstArrayPath
+      : looksLikeNumberedObject
+        ? "$.*"
+        : "data.items",
+    totalPath: totalPathCandidates?.[0] || (typeof (samplePayload?.total) === "number" ? "total" : undefined)
   };
 
-  // 🔹 Heurística de paginação (casos comuns: page/pageSize; offset/limit; cursor)
+  // 🔹 Heurística de paginação (inclui pagina/quantidade do Vista)
   const suggestPagination = (): any => {
     const root = samplePayload || {};
     const has = (k: string) => Object.prototype.hasOwnProperty.call(root, k);
+
+    // Vista: pagina / quantidade
+    if (has("pagina") && has("quantidade")) {
+      return {
+        strategy: "page",
+        page_param: "pagina",
+        size_param: "quantidade",
+        page_size_default: Number(root["quantidade"] ?? 20)
+      };
+    }
 
     // page / pageSize
     if (has("page") && (has("pageSize") || has("pagesize") || has("page_size"))) {
@@ -366,7 +391,7 @@ export async function runInferAndMaybePersist(
   if (opts?.persist) {
     // 🔸 Salva rolemap
     (integ as any).rolemap = rolemap;
-    // 🔸 Salva schema inferido
+    // 🔸 Salva schema inferido (mantém "$.*" quando aplicável)
     (integ as any).schema = suggestedSchema;
     // 🔸 Se não houver paginação setada, grava sugestão
     const currentPag = (integ as any).pagination || {};
@@ -382,6 +407,8 @@ export async function runInferAndMaybePersist(
     firstArrayPath,
     totalPathCandidates,
     sampleItem,
-    rolemap
+    rolemap,
+    suggestedSchema,
+    suggestedPagination
   };
 }

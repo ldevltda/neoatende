@@ -91,7 +91,9 @@ function normalizeItems(items: any[], rolemap?: Record<string, string>): any[] {
   return items.map(src => {
     const dst: Record<string, any> = {};
     for (const [toKey, fromPath] of Object.entries(rolemap)) {
-      dst[toKey] = deepGet(src, String(fromPath), undefined);
+      // rolemap atual usa "campo -> path" direto (sem $.)
+      const path = String(fromPath).replace(/^\$\./, "");
+      dst[toKey] = deepGet(src, path, undefined);
     }
     return Object.keys(dst).length ? dst : src;
   });
@@ -102,11 +104,32 @@ function extractFromResponse(
   respData: any,
   schema?: { itemsPath?: string; totalPath?: string }
 ): { items: any[]; total?: number } {
-  const itemsPath = schema?.itemsPath || "data.items";
+  let itemsPath = schema?.itemsPath || "data.items";
   const totalPath = schema?.totalPath || "data.total";
+
+  // Caso especial: itens no ROOT como dicionário numerado (Vista) — usamos "$.*"
+  if (itemsPath === "$.*") {
+    if (Array.isArray(respData)) {
+      return { items: respData, total: deepGet(respData, totalPath, undefined) };
+    }
+    if (respData && typeof respData === "object") {
+      const items = Object.keys(respData)
+        .filter(k => /^\d+$/.test(k))
+        .map(k => (respData as any)[k])
+        .filter(v => v && typeof v === "object");
+      const total =
+        deepGet(respData, totalPath, undefined) ??
+        (typeof (respData as any).total === "number" ? (respData as any).total : undefined);
+      return { items, total };
+    }
+    return { items: [], total: undefined };
+  }
+
   const items = deepGet(respData, itemsPath, Array.isArray(respData) ? respData : []);
-  const total = deepGet(respData, totalPath, Array.isArray(items) ? items.length : undefined);
-  return { items, total };
+  const total =
+    deepGet(respData, totalPath, undefined) ??
+    (Array.isArray(items) ? items.length : undefined);
+  return { items: Array.isArray(items) ? items : [], total };
 }
 
 function applyPagination(

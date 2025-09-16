@@ -42,7 +42,6 @@ export default function InventoryIntegrationsPage() {
         setList(rows || []);
       } catch (e) {
         // opcional: snackbar/log
-        // console.error(e);
       }
     })();
   }, []);
@@ -56,7 +55,7 @@ export default function InventoryIntegrationsPage() {
     if (!selected?.id) return;
     setLoading(true);
     try {
-      const data = await inferIntegration(selected.id); // já vem atualizado
+      const data = await inferIntegration(selected.id); // backend já persiste e devolve atualizado
       setSelected(data);
       setList(prev => prev.map(i => (i.id === data.id ? data : i)));
     } finally {
