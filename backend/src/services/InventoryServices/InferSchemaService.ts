@@ -306,7 +306,9 @@ export async function runInferAndMaybePersist(
   sampleItem: any;
   rolemap: NormalizedRolemap;
 }> {
-  const { samples, skeleton, firstArrayPath, totalPathCandidates, sampleItem } = await fetchSamplesAndInfer(integ);
+  const { samples, skeleton, firstArrayPath, totalPathCandidates, sampleItem } =
+    await fetchSamplesAndInfer(integ);
+
   const samplePayload = samples?.[0] ?? {};
   const categoryHint =
     (integ as any).categoryHint ||
@@ -315,10 +317,71 @@ export async function runInferAndMaybePersist(
 
   const rolemap = await generateRolemapWithOpenAI(samplePayload, categoryHint);
 
+  // 🔹 Sugerir schema a partir das amostras
+  const suggestedSchema = {
+    itemsPath: firstArrayPath || "data.items",
+    totalPath: totalPathCandidates?.[0] || undefined
+  };
+
+  // 🔹 Heurística de paginação (casos comuns: page/pageSize; offset/limit; cursor)
+  const suggestPagination = (): any => {
+    const root = samplePayload || {};
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(root, k);
+
+    // page / pageSize
+    if (has("page") && (has("pageSize") || has("pagesize") || has("page_size"))) {
+      return {
+        strategy: "page",
+        page_param: "page",
+        size_param: has("pageSize") ? "pageSize" : has("pagesize") ? "pagesize" : "page_size",
+        page_size_default: Number(root["pageSize"] ?? root["pagesize"] ?? root["page_size"] ?? 20)
+      };
+    }
+
+    // offset / limit
+    if (has("offset") && (has("limit") || has("pageSize"))) {
+      return {
+        strategy: "offset",
+        offset_param: "offset",
+        size_param: has("limit") ? "limit" : "pageSize",
+        page_size_default: Number(root["limit"] ?? root["pageSize"] ?? 20)
+      };
+    }
+
+    // cursor
+    if (has("cursor") || has("nextCursor")) {
+      return {
+        strategy: "cursor",
+        cursor_param: has("cursor") ? "cursor" : "nextCursor",
+        page_size_default: 20
+      };
+    }
+
+    // default: none
+    return { strategy: "none", page_size_default: 20 };
+  };
+
+  const suggestedPagination = suggestPagination();
+
   if (opts?.persist) {
+    // 🔸 Salva rolemap
     (integ as any).rolemap = rolemap;
+    // 🔸 Salva schema inferido
+    (integ as any).schema = suggestedSchema;
+    // 🔸 Se não houver paginação setada, grava sugestão
+    const currentPag = (integ as any).pagination || {};
+    if (!currentPag?.strategy || currentPag?.strategy === "none") {
+      (integ as any).pagination = suggestedPagination;
+    }
     await (integ as any).save?.();
   }
 
-  return { samples, skeleton, firstArrayPath, totalPathCandidates, sampleItem, rolemap };
+  return {
+    samples,
+    skeleton,
+    firstArrayPath,
+    totalPathCandidates,
+    sampleItem,
+    rolemap
+  };
 }

@@ -33,7 +33,7 @@ export async function createIntegration(payload) {
 
 // 🔹 POST – IA infere schema
 export async function inferIntegration(id) {
-  const { data } = await api.post(`/inventory/integrations/${id}/infer`, {});
+  const { data } = await api.post(`/inventory/integrations/${id}/infer`, { save: true });
   return data;
 }
 

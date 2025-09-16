@@ -56,9 +56,9 @@ export default function InventoryIntegrationsPage() {
     if (!selected?.id) return;
     setLoading(true);
     try {
-      const data = await inferIntegration(selected.id);
+      const data = await inferIntegration(selected.id); // já vem atualizado
       setSelected(data);
-      setList((prev) => prev.map((i) => (i.id === data.id ? data : i)));
+      setList(prev => prev.map(i => (i.id === data.id ? data : i)));
     } finally {
       setLoading(false);
     }

@@ -73,12 +73,7 @@ export const inferIntegration = async (req: Request, res: Response) => {
     // Usa o fluxo novo que:
     // 1) coleta samples, 2) pede rolemap pra OpenAI, 3) opcionalmente persiste
     const {
-      samples,
-      skeleton,
-      firstArrayPath,
-      totalPathCandidates,
-      sampleItem,
-      rolemap
+      samples, skeleton, firstArrayPath, totalPathCandidates, sampleItem, rolemap
     } = await runInferAndMaybePersist(integ, { persist: !!save });
 
     // Mantém o comportamento anterior para "schemaSuggestion" (sem quebrar nada)
@@ -99,17 +94,21 @@ export const inferIntegration = async (req: Request, res: Response) => {
       "infer finished"
     );
 
+    const integOut =
+      save
+        ? await InventoryIntegration.findOne({ where: { id: integrationId, companyId } })
+        : integ;
+
     return res.json({
-      ok: true,
-      integrationId,
-      saved: !!save,
-      schemaSuggestion,
-      totalPathCandidates,
-      skeleton,
-      sampleItem,
-      samplesCount: samples?.length ?? 0,
-      rolemap // <- já normalizado e (se save=true) já salvo no integration.rolemap
-    });
+        ...((integOut as any)?.get ? (integOut as any).get({ plain: true }) : integOut),
+        saved: !!save,
+        schemaSuggestion,
+        totalPathCandidates,
+        skeleton,
+        sampleItem,
+        samplesCount: samples?.length ?? 0,
+        rolemap
+      });
   } catch (err: any) {
     logger.error({ ctx: "InventoryController.inferIntegration", err }, "infer error");
     return res.status(500).json({ error: "InferFailed", message: err?.message });
