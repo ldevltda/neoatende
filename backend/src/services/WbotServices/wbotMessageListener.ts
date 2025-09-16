@@ -874,127 +874,158 @@ export const transferQueue = async (
 };
 
 export const verifyMediaMessage = async (
-  sentMessage: any,
-  ticket: any,
-  contact: any,
-  ticketTraking: any,
-  quoted = false,
-  isPrivate = false,
-  wbot?: any
-): Promise<Message | undefined> => {
-  try {
-    const msgKey = sentMessage?.key || sentMessage?.message?.key || {};
-    const id = msgKey.id || sentMessage?.messageID || sentMessage?.id;
+  msg: proto.IWebMessageInfo,
+  ticket: Ticket,
+  contact: Contact,
+  ticketTraking: TicketTraking = null,
+  isForwarded: boolean = false,
+  isPrivate: boolean = false,
+  wbot: Session = null
+): Promise<Message> => {
+  const io = getIO();
+  const quotedMsg = await verifyQuotedMessage(msg);
+  const media = await downloadMedia(msg);
 
-    if (!id) {
-      logger.warn({ ctx: "WA", ticketId: ticket.id }, "verifyMediaMessage: no id found");
-      return;
-    }
-
-    const mediaType =
-      sentMessage?.message?.audioMessage ? "audioMessage" :
-      sentMessage?.message?.imageMessage ? "imageMessage" :
-      sentMessage?.message?.videoMessage ? "videoMessage" :
-      sentMessage?.message?.documentMessage ? "documentMessage" :
-      "media";
-
-    const payload = {
-      id,
-      remoteJid: msgKey.remoteJid || ticket?.contact?.number || ticket?.remoteJid,
-      participant: msgKey.participant || null,
-      dataJson: JSON.stringify(sentMessage),
-      ack: 1,
-      read: true,
-      fromMe: true,
-      body: sentMessage?.caption || "",
-      mediaType,
-      isDeleted: false,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      ticketId: ticket.id,
-      companyId: ticket.companyId,
-      isEdited: false
-    };
-
-    // upsert idempotente
-    await Message.upsert(payload, { returning: false });
-
-    const saved = await Message.findByPk(id);
-    logger.debug({ ctx: "WA", ticketId: ticket.id, id, mediaType }, "verifyMediaMessage: upsert ok");
-    return saved || undefined;
-  } catch (err: any) {
-    if (err?.name === "SequelizeUniqueConstraintError" || err?.code === "23505") {
-      logger.warn({ ctx: "WA", ticketId: ticket.id, err: err?.message }, "verifyMediaMessage: duplicate suppressed");
-      // retorna o registro já existente para manter compatibilidade
-      const dupId =
-        sentMessage?.key?.id ||
-        sentMessage?.message?.key?.id ||
-        sentMessage?.messageID ||
-        sentMessage?.id;
-      if (dupId) {
-        try {
-          const existing = await Message.findByPk(dupId);
-          return existing || undefined;
-        } catch {}
-      }
-      return;
-    }
-    logger.error({ ctx: "WA", ticketId: ticket.id, err }, "verifyMediaMessage: unexpected error");
-    return;
+  if (!media) {
+    throw new Error("ERR_WAPP_DOWNLOAD_MEDIA");
   }
+
+  if (!media.filename) {
+    const ext = mimeExtension(media.mimetype);
+    media.filename = `${new Date().getTime()}.${ext}`;
+  }
+
+  try {
+    await writeFileAsync(
+      join(__dirname, "..", "..", "..", "public", media.filename),
+      media.data as NodeJS.ArrayBufferView
+    );
+  } catch (err) {
+    Sentry.captureException(err);
+    logger.error(err);
+  }
+
+  const body = getBodyMessage(msg);
+
+  const hasCap = hasCaption(body, media.filename);
+  const bodyMessage = body ? hasCap ? formatBody(body, ticket.contact) : "-" : "-";
+
+  const messageData = {
+    id: msg.key.id,
+    ticketId: ticket.id,
+    contactId: msg.key.fromMe ? undefined : contact.id,
+    body: bodyMessage,
+    fromMe: msg.key.fromMe,
+    read: msg.key.fromMe,
+    mediaUrl: media.filename,
+    mediaType: media.mimetype.split("/")[0],
+    quotedMsgId: quotedMsg?.id,
+    ack: msg.status,
+    remoteJid: msg.key.remoteJid,
+    participant: msg.key.participant,
+    dataJson: JSON.stringify(msg),
+    ticketTrakingId: ticketTraking?.id,
+  };
+
+  await ticket.update({
+    lastMessage: body || "Arquivo de mídia"
+  });
+
+  const newMessage = await CreateMessageService({
+    messageData,
+    companyId: ticket.companyId
+  });
+
+  if (!msg.key.fromMe && ticket.status === "closed") {
+    await ticket.update({ status: "pending" });
+    await ticket.reload({
+      include: [
+        { model: Queue, as: "queue" },
+        { model: User, as: "user" },
+        { model: Contact, as: "contact" }
+      ]
+    });
+
+    io.to(`company-${ticket.companyId}-closed`)
+      .to(`queue-${ticket.queueId}-closed`)
+      .emit(`company-${ticket.companyId}-ticket`, {
+        action: "delete",
+        ticket,
+        ticketId: ticket.id
+      });
+
+    io.to(`company-${ticket.companyId}-${ticket.status}`)
+      .to(`queue-${ticket.queueId}-${ticket.status}`)
+      .to(ticket.id.toString())
+      .emit(`company-${ticket.companyId}-ticket`, {
+        action: "update",
+        ticket,
+        ticketId: ticket.id
+      });
+  }
+
+  return newMessage;
 };
 
-// imports esperados no topo do arquivo:
-// import Message from "../../models/Message";
-// import { logger } from "../../utils/logger";
-// import { UniqueConstraintError } from "sequelize";
-
 export const verifyMessage = async (
-  sentMessage: any,
-  ticket: any,
-  contact: any
-): Promise<void> => {
-  try {
-    const msgKey = sentMessage?.key || sentMessage?.message?.key || {};
-    const id = msgKey.id || sentMessage?.messageID || sentMessage?.id;
+  msg: proto.IWebMessageInfo,
+  ticket: Ticket,
+  contact: Contact
+) => {
+  const io = getIO();
+  const quotedMsg = await verifyQuotedMessage(msg);
+  const body = getBodyMessage(msg);
+  const isEdited = getTypeMessage(msg) == "editedMessage";
 
-    if (!id) {
-      logger.warn({ ctx: "WA", ticketId: ticket.id }, "verifyMessage: no id found in message");
-      return;
-    }
+  const messageData = {
+    id: isEdited
+      ? msg?.message?.editedMessage?.message?.protocolMessage?.key?.id
+      : msg.key.id,
+    ticketId: ticket.id,
+    contactId: msg.key.fromMe ? undefined : contact.id,
+    body,
+    fromMe: msg.key.fromMe,
+    mediaType: getTypeMessage(msg),
+    read: msg.key.fromMe,
+    quotedMsgId: quotedMsg?.id,
+    ack: msg.status,
+    remoteJid: msg.key.remoteJid,
+    participant: msg.key.participant,
+    dataJson: JSON.stringify(msg),
+    isEdited: isEdited
+  };
 
-    const payload = {
-      id,
-      remoteJid: msgKey.remoteJid || ticket?.contact?.number || ticket?.remoteJid,
-      participant: msgKey.participant || null,
-      dataJson: JSON.stringify(sentMessage),
-      ack: 1,
-      read: true,
-      fromMe: true,
-      body: sentMessage?.message?.conversation ||
-            sentMessage?.message?.extendedTextMessage?.text ||
-            sentMessage?.text ||
-            "",
-      mediaType: sentMessage?.message?.extendedTextMessage ? "extendedTextMessage" : "conversation",
-      isDeleted: false,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      ticketId: ticket.id,
-      companyId: ticket.companyId,
-      isEdited: false
-    };
+  await ticket.update({
+    lastMessage: body
+  });
 
-    // idempotente: upsert ou findOrCreate
-    await Message.upsert(payload, { returning: false });
+  await CreateMessageService({ messageData, companyId: ticket.companyId });
 
-    logger.debug({ ctx: "WA", ticketId: ticket.id, id }, "verifyMessage: upsert ok");
-  } catch (err: any) {
-    // ignora duplicate key de forma segura
-    if (err?.name === "SequelizeUniqueConstraintError" || err?.code === "23505") {
-      logger.warn({ ctx: "WA", ticketId: ticket.id, err: err?.message }, "verifyMessage: duplicate suppressed");
-      return;
-    }
-    logger.error({ ctx: "WA", ticketId: ticket.id, err }, "verifyMessage: unexpected error");
+  if (!msg.key.fromMe && ticket.status === "closed") {
+    await ticket.update({ status: "pending" });
+    await ticket.reload({
+      include: [
+        { model: Queue, as: "queue" },
+        { model: User, as: "user" },
+        { model: Contact, as: "contact" }
+      ]
+    });
+
+    io.to(`company-${ticket.companyId}-closed`)
+      .to(`queue-${ticket.queueId}-closed`)
+      .emit(`company-${ticket.companyId}-ticket`, {
+        action: "delete",
+        ticket,
+        ticketId: ticket.id
+      });
+
+    io.to(`company-${ticket.companyId}-${ticket.status}`)
+      .to(`queue-${ticket.queueId}-${ticket.status}`)
+      .emit(`company-${ticket.companyId}-ticket`, {
+        action: "update",
+        ticket,
+        ticketId: ticket.id
+      });
   }
 };
 
@@ -2358,15 +2389,7 @@ const handleMessage = async (
     }
 
     if (hasMedia) {
-      mediaSent = await verifyMediaMessage(
-        msg,
-        ticket,
-        contact,
-        ticketTraking,
-        false,
-        false,
-        wbot
-      );
+      mediaSent = await verifyMediaMessage(msg, ticket, contact);
     } else {
       await verifyMessage(msg, ticket, contact);
     }
