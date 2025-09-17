@@ -22,6 +22,7 @@ import { logger } from "../../utils/logger";
 import InventoryIntegration from "../../models/InventoryIntegration";
 import { ChatCompletionTool } from "openai/resources/chat/completions";
 import { randomUUID } from "crypto";
+import jwt from "jsonwebtoken";
 
 type Session = WASocket & { id?: number };
 type SessionOpenAi = OpenAI & { id?: number };
@@ -50,6 +51,41 @@ const sanitizeName = (name: string): string => {
   sanitized = sanitized.replace(/[^a-zA-Z0-9]/g, "");
   return sanitized.substring(0, 60);
 };
+
+/**
+ * Assina um JWT de "usuário de serviço" para chamadas internas.
+ * Requer que o mesmo segredo do middleware esteja em JWT_SECRET (ou SERVICE_JWT_SECRET).
+ * O payload inclui companyId para o middleware preencher req.user.companyId.
+ */
+function makeServiceBearer(companyId: number): string {
+  const secret =
+    process.env.SERVICE_JWT_SECRET ||
+    process.env.JWT_SECRET ||
+    process.env.JWT_KEY; // use o que já existe no projeto
+
+  if (!secret) {
+    // Loga claro no console: sem segredo não dá pra assinar.
+    logger.error(
+      { ctx: "OpenAiService", step: "makeServiceBearer", companyId },
+      "JWT secret ausente (defina SERVICE_JWT_SECRET ou JWT_SECRET)"
+    );
+    return "";
+  }
+
+  // Monte o payload com os campos que seu middleware costuma popular em req.user
+  const payload: any = {
+    id: 0, // id simbólico
+    name: "inventory-bot",
+    email: "inventory-bot@system.local",
+    profile: "admin", // ou "user" conforme sua regra; admin evita bloqueios
+    companyId,        // *** IMPORTANTE *** o controller usa req.user.companyId
+  };
+
+  // Token curto por segurança (5 min é suficiente)
+  const token = jwt.sign(payload, secret, { expiresIn: "5m" });
+
+  return `Bearer ${token}`;
+}
 
 /** Gera tools dinamicamente com base nas integrações da empresa */
 async function buildTools(companyId: number): Promise<ChatCompletionTool[]> {
@@ -92,51 +128,74 @@ async function executeIntegration(
   const base = (process.env.BACKEND_URL || "").replace(/\/$/, "");
   const url = base ? `${base}/inventory/agent/lookup` : `http://127.0.0.1:3000/inventory/agent/lookup`;
 
-  const t0 = Date.now();
-  logger.info({
-    ctx: "OpenAiService",
-    step: "executeIntegration:request",
-    integrationId,
-    companyId,
-    url,
-    args
-  }, "calling InventoryAgentController");
-
+    const t0 = Date.now();
   try {
-    const { data } = await axios.post(url, {
-      integrationId,
-      companyId,
-      text: args.text,
-      filtros: args.filtros || {},
-      page: args.page || 1,
-      pageSize: args.pageSize || 10
-    });
+    const bearer = makeServiceBearer(companyId);
+
+    const { data } = await axios.post(
+      url,
+      {
+        integrationId,
+        companyId,
+        text: args.text,
+        filtros: args.filtros || {},
+        page: args.page || 1,
+        pageSize: args.pageSize || 10
+      },
+      {
+        headers: {
+          Authorization: bearer,                 // <<<<<<<<<< AQUI
+          "Content-Type": "application/json",
+          Accept: "application/json"
+        },
+        timeout: 10000,
+        validateStatus: () => true
+      }
+    );
 
     const tookMs = Date.now() - t0;
 
-    logger.info({
-      ctx: "OpenAiService",
-      step: "executeIntegration:response",
-      integrationId,
-      url,
-      tookMs,
-      total: data?.total ?? data?.items?.length ?? 0,
-      hasError: !!data?.error
-    }, "integration executed");
+    if ((data as any)?.statusCode === 401 || data?.error === "ERR_SESSION_EXPIRED") {
+      logger.warn(
+        {
+          ctx: "OpenAiService",
+          step: "executeIntegration:unauthorized",
+          integrationId,
+          tookMs,
+          statusCode: (data as any)?.statusCode,
+          error: data?.error
+        },
+        "inventory/agent/auto não autorizada"
+      );
+    }
+
+    logger.info(
+      {
+        ctx: "OpenAiService",
+        step: "executeIntegration:response",
+        integrationId,
+        tookMs,
+        total: data?.total ?? data?.items?.length ?? 0,
+        hasError: !!data?.error
+      },
+      "integration executed"
+    );
 
     return data; // { items, total, ... }
   } catch (err: any) {
     const tookMs = Date.now() - t0;
-    logger.error({
-      ctx: "OpenAiService",
-      step: "executeIntegration:error",
-      integrationId,
-      url,
-      tookMs,
-      error: err?.message,
-      status: err?.response?.status,
-      data: err?.response?.data
-    }, "integration execution failed");
+    logger.error(
+      {
+        ctx: "OpenAiService",
+        step: "executeIntegration:error",
+        integrationId,
+        tookMs,
+        error: err?.message,
+        status: err?.response?.status,
+        data: err?.response?.data
+      },
+      "integration execution failed"
+    );
     return { error: "IntegrationExecutionFailed", message: err?.message || "Falha na execução" };
   }
 }
