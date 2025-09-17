@@ -69,6 +69,30 @@ import { WebhookModel } from "../../models/Webhook";
 import {differenceInMilliseconds} from "date-fns";
 import Whatsapp from "../../models/Whatsapp";
 import axios from "axios";
+import jwt from "jsonwebtoken";
+
+function makeServiceBearer(companyId: number): string {
+  const secret =
+    process.env.SERVICE_JWT_SECRET ||
+    process.env.JWT_SECRET ||
+    process.env.JWT_KEY;
+
+  if (!secret) {
+    console.error("JWT secret ausente (defina SERVICE_JWT_SECRET ou JWT_SECRET)");
+    return "";
+  }
+
+  const payload: any = {
+    id: 0,
+    name: "inventory-bot",
+    email: "inventory-bot@system.local",
+    profile: "admin",
+    companyId
+  };
+
+  const token = jwt.sign(payload, secret, { expiresIn: "5m" });
+  return `Bearer ${token}`;
+}
 
 type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
 
@@ -728,6 +752,29 @@ const handleOpenAi = async (
   if (!prompt) return;
 
   if (msg.messageStubType) return;
+
+  const base = (process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "");
+
+  const bearer = makeServiceBearer(ticket.companyId);
+
+  const { data: auto } = await axios.post(
+    `${base}/inventory/agent/auto`,
+    {
+      companyId: ticket.companyId,
+      text: bodyMessage,
+      page: 1,
+      pageSize: 5
+    },
+    {
+      headers: {
+        Authorization: bearer,
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      timeout: 10000,
+      validateStatus: () => true
+    }
+  );
 
   // ============ INVENTORY AUTO antes do LLM ============
   try {
