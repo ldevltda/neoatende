@@ -58,9 +58,16 @@ function normalize(s?: string) {
     .normalize("NFD").replace(/\p{Diacritic}/gu, "")
     .toLowerCase().trim();
 }
-function normEq(a?: string, b?: string) { return !!a && !!b && normalize(a) === normalize(b); }
-function normIncludes(hay?: string, needle?: string) { return !needle || (!!hay && normalize(hay).includes(normalize(needle))); }
-function anyIncludes(hayList: Array<string | undefined>, needle?: string) { return !needle || hayList.some(h => normIncludes(h, needle)); }
+
+function normEq(a?: string, b?: string) {
+  return !!a && !!b && normalize(a) === normalize(b);
+}
+function normIncludes(hay?: string, needle?: string) {
+  return !needle || (!!hay && normalize(hay).includes(normalize(needle)));
+}
+function anyIncludes(hayList: Array<string | undefined>, needle?: string) {
+  return !needle || hayList.some(h => normIncludes(h, needle));
+}
 
 function toNumber(v: any): number | undefined {
   if (v === null || v === undefined) return undefined;
@@ -74,24 +81,42 @@ function parseIntSafe(v: any): number | undefined {
   return isNaN(n) ? undefined : n;
 }
 
-// Accessor com paths simples "a.b.c" também
+/** Accessor tolerante:
+ * - aceita path "a.b.c"
+ * - casa chave ignorando acentos e maiúsculas/minúsculas
+ */
 function getField(obj: any, aliases: string[]) {
   for (const path of aliases) {
     let cur: any = obj;
     const parts = path.split(".");
-    for (const p of parts) {
-      if (cur && Object.prototype.hasOwnProperty.call(cur, p)) cur = cur[p];
-      else { cur = undefined; break; }
+    let ok = true;
+    for (const rawKey of parts) {
+      if (cur == null) { ok = false; break; }
+
+      if (Object.prototype.hasOwnProperty.call(cur, rawKey)) {
+        cur = cur[rawKey];
+        continue;
+      }
+
+      // procura por chave equivalente (case-insensitive + sem acento)
+      const target = normalize(rawKey);
+      const foundKey = Object.keys(cur).find(k => normalize(k) === target);
+      if (foundKey !== undefined) {
+        cur = cur[foundKey];
+      } else {
+        ok = false;
+        break;
+      }
     }
-    if (cur !== undefined) return cur;
+    if (ok && cur !== undefined) return cur;
   }
   return undefined;
 }
 
-// Mapas de sinônimos de tipo (imóveis) e transmissão/combustível (carros)
+// Mapas de sinônimos
 const TYPE_MAP: Record<string, string[]> = {
   "apartamento": ["apartamento", "apto", "ap.", "ap", "flat"],
-  "casa": ["casa", "sobrado", "residencia"],
+  "casa": ["casa", "sobrado", "residencia", "residência"],
   "studio": ["studio", "stúdio", "kitnet", "kitinete", "loft"],
   "terreno": ["terreno", "lote", "loteamento"]
 };
@@ -158,7 +183,7 @@ export function parseCriteriaFromText(text: string): Criteria {
   if (areaMin?.[3]) crit.areaMin = toNumber(areaMin[3]);
   if (areaMax?.[3]) crit.areaMax = toNumber(areaMax[3]);
 
-  // Preços (até/entre)
+  // Preços
   const priceMax1 = t.match(/\bat[eé]\s*(r?\$?\s*[\d\.\,]+(k|mil|milhoes|milhão)?)\b/);
   if (priceMax1?.[1]) crit.priceMax = normalizePrice(priceMax1[1]);
   const priceRange = t.match(/entre\s*(r?\$?\s*[\d\.\,]+(?:k|mil|milhoes|milhão)?)\s*e\s*(r?\$?\s*[\d\.\,]+(?:k|mil|milhoes|milhão)?)/);
@@ -176,12 +201,9 @@ export function parseCriteriaFromText(text: string): Criteria {
   const km = t.match(/(km|quilometragem)\s*(ate|até)?\s*([\d\.\,]+)/);
   if (km?.[3]) crit.kmMax = toNumber(km[3]);
 
-  // marca e modelo simples (heurística): ex.: "toyota corolla", "honda civic"
+  // Marca / modelo (heurístico)
   const brands = ["toyota","honda","chevrolet","vw","volkswagen","fiat","hyundai","renault","ford","jeep","nissan","peugeot","citroen","bmw","mercedes","audi"];
-  for (const b of brands) {
-    if (t.includes(b)) { crit.brand = b; break; }
-  }
-  // model: pega a palavra após a marca
+  for (const b of brands) { if (t.includes(b)) { crit.brand = b; break; } }
   if (crit.brand) {
     const re = new RegExp(`${crit.brand}\\s+([a-z0-9\\-]+)`);
     const mm = t.match(re);
@@ -252,14 +274,14 @@ function makeSearchBlob(it: any) {
   push(getField(it, ["slug","url","link"]));
   push(getField(it, ["address","endereco.logradouro","endereco.complemento"]));
 
-  // Localização
-  push(getField(it, ["location.city","Cidade","cidade"]));
-  push(getField(it, ["location.neighborhood","Bairro","bairro"]));
-  push(getField(it, ["location.state","Estado","estado","UF"]));
+  // Localização (inclui variantes minúsculas da Barbi)
+  push(getField(it, ["location.city","Cidade","cidade","city"]));
+  push(getField(it, ["location.neighborhood","Bairro","bairro","neighborhood"]));
+  push(getField(it, ["location.state","Estado","estado","UF","uf","state"]));
 
   // Imóveis
-  push(getField(it, ["Dormitorios","Dormitórios","dormitorios","Quartos","quartos"]));
-  push(getField(it, ["AreaPrivativa","area","Área","Area","M2","m2"]));
+  push(getField(it, ["Dormitorios","Dormitórios","dormitorios","dormitórios","Quartos","quartos","bedrooms"]));
+  push(getField(it, ["AreaPrivativa","area","Área","Area","M2","m2","squareMeters"]));
 
   // Veículos
   push(getField(it, ["marca","brand"]));
@@ -283,15 +305,23 @@ function makeSearchBlob(it: any) {
   return normalize(bits.join(" | "));
 }
 
+// Coerção defensiva (aceita array ou { data: [...] })
+function coerceItems(maybe: any): any[] {
+  if (Array.isArray(maybe)) return maybe;
+  if (maybe && Array.isArray(maybe.data)) return maybe.data;
+  return [];
+}
+
 // ============== HARD-FILTER + RANKING ==============
-export function filterAndRankItems(items: any[], criteria: Criteria): any[] {
+export function filterAndRankItems(itemsIn: any[], criteria: Criteria): any[] {
+  const items = coerceItems(itemsIn);
   if (!Array.isArray(items) || !items.length) return [];
 
   const rankedBase = items.map((it) => {
-    // Campos estruturados
+    // Campos estruturados (com aliases da Barbi)
     const bairro   = getField(it, ["location.neighborhood","neighborhood","Bairro","bairro"]);
     const cidade   = getField(it, ["location.city","city","Cidade","cidade"]);
-    const estado   = getField(it, ["location.state","state","Estado","estado","UF"]);
+    const estado   = getField(it, ["location.state","state","Estado","estado","UF","uf"]);
     const titulo   = getField(it, ["TituloSite","Titulo","title"]);
     const descr    = getField(it, ["description","Descricao","Descrição"]);
     const categoria= getField(it, ["category","Categoria","tipo","Tipo","TipoImovel","tipoImovel"]);
@@ -299,7 +329,7 @@ export function filterAndRankItems(items: any[], criteria: Criteria): any[] {
     const price    = toNumber(priceRaw);
 
     // Imóveis
-    const dorm     = parseIntSafe(getField(it, ["bedrooms","Dormitorios","Dormitórios","dormitorios","Quartos","quartos"]));
+    const dorm     = parseIntSafe(getField(it, ["bedrooms","Dormitorios","Dormitórios","dormitorios","dormitórios","Quartos","quartos"]));
     const area     = toNumber(getField(it, ["AreaPrivativa","area","Área","Area","M2","m2"]));
     const tipoItem = String(categoria ?? titulo ?? descr ?? "");
 
@@ -322,12 +352,12 @@ export function filterAndRankItems(items: any[], criteria: Criteria): any[] {
     const blob = makeSearchBlob(it);
 
     // ---------- HARD FILTER ABRANGENTE ----------
-    // Geo
+    // Geo (campo OU blob)
     if (criteria.city)        { const ok = normIncludes(cidade, criteria.city) || blob.includes(normalize(criteria.city)); if (!ok) return null; }
     if (criteria.neighborhood){ const ok = normIncludes(bairro, criteria.neighborhood) || blob.includes(normalize(criteria.neighborhood)); if (!ok) return null; }
     if (criteria.state && estado && !normEq(estado, criteria.state)) return null;
 
-    // Imóveis
+    // Imóveis (D-U-R-O nos dormitórios)
     if (criteria.bedrooms !== undefined && dorm !== undefined && dorm !== criteria.bedrooms) return null;
     if (criteria.typeHint && !(typeMatches(tipoItem, criteria.typeHint) || blob.includes(normalize(criteria.typeHint)))) return null;
     if (criteria.areaMin !== undefined && area !== undefined && area < criteria.areaMin) return null;
@@ -392,7 +422,7 @@ export function filterAndRankItems(items: any[], criteria: Criteria): any[] {
     return { it, score };
   }).filter(Boolean) as Array<{ it: any; score: number }>;
 
-  // fallback: se o hard-filter removeu tudo, devolve ranking neutro
+  // fallback: se o hard-filter removeu tudo, devolve ranking neutro do lote (para pesquisas vazias)
   const arr = rankedBase.length ? rankedBase : items.map(it => ({ it, score: 0 }));
   return arr.sort((a, b) => b.score - a.score).map(x => x.it);
 }
