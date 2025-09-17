@@ -457,11 +457,11 @@ export const getQuotedMessage = (msg: proto.IWebMessageInfo): any => {
     msg.message.listResponseMessage?.singleSelectReply?.selectedRowId ||
     msg?.message?.listResponseMessage?.singleSelectReply.selectedRowId ||
     msg.message.listResponseMessage?.contextInfo;
-  msg.message.senderKeyDistributionMessage;
+    msg.message.senderKeyDistributionMessage;
 
-  // testar isso
-
-  return extractMessageContent(body[Object.keys(body).values().next().value]);
+  if (!body) return null;
+  const key = Object.keys(body).values().next().value;
+  return extractMessageContent(body[key]);
 };
 export const getQuotedMessageId = (msg: proto.IWebMessageInfo) => {
   const body = extractMessageContent(msg.message)[
@@ -533,10 +533,19 @@ const downloadMedia = async (msg: proto.IWebMessageInfo) => {
       ?.imageMessage ||
     msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.videoMessage;
 
-  if (!mineType) console.log(msg);
+  if (!mineType) {
+    Sentry.withScope(scope => {
+      scope.setLevel(Sentry.Severity.Warning);
+      scope.setContext("downloadMedia", {
+        keyId: msg?.key?.id ?? "unknown",
+        remoteJid: msg?.key?.remoteJid ?? "unknown"
+      });
+      Sentry.captureMessage("downloadMedia: mineType ausente");
+    });
+  }
 
   if (!filename) {
-    const ext = mimeExtension(mineType.mimetype);
+    const ext = mineType?.mimetype ? mimeExtension(mineType.mimetype) : "bin";
     filename = `${new Date().getTime()}.${ext}`;
   } else {
     filename = `${new Date().getTime()}_${filename}`;
@@ -544,7 +553,7 @@ const downloadMedia = async (msg: proto.IWebMessageInfo) => {
 
   return {
     data: buffer,
-    mimetype: mineType.mimetype,
+    mimetype: mineType?.mimetype || "application/octet-stream",
     filename
   };
 
@@ -735,9 +744,6 @@ const handleOpenAi = async (
 
   const bodyMessage = getBodyMessage(msg);
 
-  // paginação "ver mais"
-  const wantMore = /\b(ver mais|mais opções|próxima página)\b/i.test(bodyMessage || "");
-
   if (!bodyMessage) return;
 
   let { prompt } = await ShowWhatsAppService(wbot.id, ticket.companyId);
@@ -752,29 +758,6 @@ const handleOpenAi = async (
   if (!prompt) return;
 
   if (msg.messageStubType) return;
-
-  const base = (process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "");
-
-  const bearer = makeServiceBearer(ticket.companyId);
-
-  const { data: auto } = await axios.post(
-    `${base}/inventory/agent/auto`,
-    {
-      companyId: ticket.companyId,
-      text: bodyMessage,
-      page: 1,
-      pageSize: 5
-    },
-    {
-      headers: {
-        Authorization: bearer,
-        "Content-Type": "application/json",
-        Accept: "application/json"
-      },
-      timeout: 10000,
-      validateStatus: () => true
-    }
-  );
 
   // ============ INVENTORY AUTO antes do LLM ============
   try {
@@ -1118,8 +1101,7 @@ export const verifyMediaMessage = async (
   }
 
   const body = getBodyMessage(msg);
-  const hasCap = hasCaption(body, media.filename);
-  const bodyMessage = body ? (hasCap ? formatBody(body, ticket.contact) : "-") : "-";
+  const bodyMessage = body ? formatBody(body, ticket.contact) : "-";
 
   const messageData = {
     waId: msg.key.id,
@@ -1818,7 +1800,7 @@ const handleChartbot = async (
     //   return botList();
     // };
 
-    if (buttonActive.value === "button" && QueueOption.length <= 4) {
+    if (buttonActive.value === "button" && queueOptions.length <= 4) {
       return botButton();
     }
 
@@ -1826,7 +1808,7 @@ const handleChartbot = async (
       return botText();
     }
 
-    if (buttonActive.value === "button" && QueueOption.length > 4) {
+    if (buttonActive.value === "button" && queueOptions.length > 4) {
       return botText();
     }
   } else if (!isNil(queue) && !isNil(ticket.queueOptionId)) {
@@ -1943,7 +1925,7 @@ const handleChartbot = async (
         return botList();
       }
 
-      if (buttonActive.value === "button" && QueueOption.length <= 4) {
+       if (buttonActive.value === "button" && queueOptions.length <= 4) {
         return botButton();
       }
 
@@ -1951,7 +1933,7 @@ const handleChartbot = async (
         return botText();
       }
 
-      if (buttonActive.value === "button" && QueueOption.length > 4) {
+      if (buttonActive.value === "button" && queueOptions.length > 4) {
         return botText();
       }
     }
@@ -2106,11 +2088,8 @@ const flowbuilderIntegration = async (
   const diferencaEmMilissegundos = Math.abs(
     differenceInMilliseconds(dateTicket, dateNow)
   );
-  //const seisHorasEmMilissegundos = 21600000;
-  const seisHorasEmMilissegundos = 0;
-
-  logger.info(listPhrase.filter(item => item.phrase.toLowerCase()));
-  logger.info(isFirstMsg);
+  
+  const seisHorasEmMilissegundos = 21600000; // 6 horas
 
   // Flow with not found phrase
   if (
@@ -3210,6 +3189,8 @@ const wbotMessageListener = async (
     });
 
     wbot.ev.on("messages.update", (updates) => {
+      // Listener 1: trata userReceipt (delivery/read/played) vindos dentro de messages.update.
+      // Importante: NÃO usar u.status para ACK — é inconsistente entre versões do Baileys.
       try {
         for (const u of updates) {
           const id = u?.key?.id;
@@ -3259,6 +3240,7 @@ const wbotMessageListener = async (
     });
 
     wbot.ev.on("messages.update", (updates) => {
+      // Listener 2: algumas versões trazem "played" como flag direta. Mantemos separado por clareza.
       try {
         for (const u of updates) {
           const id = u?.key?.id;
@@ -3283,24 +3265,5 @@ const wbotMessageListener = async (
     logger.error(`Error handling wbot message listener. Err: ${error}`);
   }
 };
-
-// Mapeia status/receipt do Baileys para o nosso ack [1..4]
-const mapStatusToAck = (status: number | string | undefined): number | null => {
-  // Baileys pode mandar number (1..3) ou string em algumas versões
-  if (status === undefined || status === null) return null;
-
-  if (typeof status === "number") {
-    // versões novas costumam usar 1=server, 2=delivery, 3=read
-    if (status >= 1 && status <= 4) return status;
-    return null;
-  }
-
-  const s = String(status).toLowerCase();
-  if (["server_ack", "sent", "ok"].includes(s)) return 1;
-  if (["delivery_ack", "delivered"].includes(s)) return 2;
-  if (["read", "read_ack", "played"].includes(s)) return s === "played" ? 4 : 3;
-  return null;
-};
-
 
 export { wbotMessageListener, handleMessage };
