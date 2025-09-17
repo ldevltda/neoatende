@@ -177,6 +177,16 @@ function applyPagination(
    Builders de filtros (Vista)
    ======================= */
 
+// Parse seguro p/ quando 'pesquisa' vier como string JSON
+function tryParsePesquisa(p: any): any {
+  if (!p) return {};
+  if (typeof p === "string") {
+    try { return JSON.parse(p); } catch { return {}; }
+  }
+  if (typeof p === "object") return p;
+  return {};
+}
+
 // Converte "500 mil", "500k", "1.2 mi" -> número (R$)
 function parseMoney(text?: string): number | undefined {
   if (!text) return;
@@ -213,13 +223,13 @@ function parseMoney(text?: string): number | undefined {
   return undefined;
 }
 
-// Tenta extrair range "de X a Y" ou "entre X e Y"
+// Tenta extrair "de X a Y", "entre X e Y", "a partir de X", "até Y"
 function parseRange(text?: string): { min?: number; max?: number } | undefined {
   if (!text) return;
   const t = text.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
 
   // de 300 a 500 mil / entre 300 e 500 mil
-  const m = t.match(/(?:de|entre)\s+([^\s]+(?:\s+[^\s]+)*)\s+(?:a|e|ate)\s+([^\s]+(?:\s+[^\s]+)*)/);
+  const m = t.match(/(?:de|entre)\s+([^\s].*?)\s+(?:a|e|ate)\s+([^\s].*)/);
   if (m) {
     const n1 = parseMoney(m[1]);
     const n2 = parseMoney(m[2]);
@@ -244,29 +254,31 @@ function parseRange(text?: string): { min?: number; max?: number } | undefined {
   return undefined;
 }
 
-// Cria { pesquisa.filter } a partir do texto livre
+// === Builder principal: usa o TEXTO ORIGINAL (com acentos) para Cidade/Bairro ===
 function buildVistaPesquisaFromText(text?: string) {
   const out: any = { filter: {} as any };
   if (!text) return out;
 
-  const t = text.normalize("NFD").replace(/\p{Diacritic}/gu, ""); // remove acentos
+  const orig = text; // mantém acentos para os valores enviados
+  const norm = text.normalize("NFD").replace(/\p{Diacritic}/gu, ""); // regex permissiva
 
-  // Dormitórios: "2 quartos", "2 qts", "2 dormitorios"
-  const mDorm = t.match(/(\d+)\s*(quarto|qts?|dormitorios?)/i);
+  // Dormitórios
+  const mDorm = norm.match(/(\d+)\s*(quarto|qts?|dormitorios?)/i);
   if (mDorm) {
     const q = Number(mDorm[1]);
     if (q > 0) out.filter.Dormitorios = { min: q, max: q };
   }
 
-  // Bairro: "bairro Campinas"
-  const mBairro = t.match(/bairro\s+([A-Za-z0-9\s\-]+)/i);
-  if (mBairro) {
-    const bairro = mBairro[1].trim().replace(/\s{2,}/g, " ");
-    if (bairro) out.filter.Bairro = [bairro];
+  // Bairro (tenta no original; se falhar, usa normalizado)
+  const mBairroOrig = orig.match(/bairro\s+([\p{L}0-9\s\-]+)/iu);
+  if (mBairroOrig) out.filter.Bairro = [mBairroOrig[1].trim()];
+  else {
+    const mBairro = norm.match(/bairro\s+([A-Za-z0-9\s\-]+)/i);
+    if (mBairro) out.filter.Bairro = [mBairro[1].trim()];
   }
 
-  // Cidade/UF: "São José/SC"  -> Cidade = ["São José"], UF = ["SC"]
-  const mCidadeUF = t.match(/([A-Za-z\s\.]+)\/([A-Za-z]{2})/);
+  // Cidade/UF no original: "São José/SC"
+  const mCidadeUF = orig.match(/([\p{L}\s\.]+)\/([A-Za-z]{2})/u);
   if (mCidadeUF) {
     const cidade = mCidadeUF[1].trim().replace(/\s{2,}/g, " ");
     const uf = mCidadeUF[2].toUpperCase();
@@ -274,22 +286,18 @@ function buildVistaPesquisaFromText(text?: string) {
     out.filter.UF = [uf]; // Vista usa UF (não "Estado")
   }
 
-  // Preço: range/min/max
-  const r = parseRange(t);
+  // Preço → range (array de 2 números para o Vista)
+  const r = parseRange(orig);
   if (r) {
-    if (typeof r.min === "number" && typeof r.max === "number") {
-      out.filter.ValorVenda = [r.min, r.max]; // range obrigatório = array de 2 números
-    } else if (typeof r.max === "number") {
-      out.filter.ValorVenda = [0, r.max];     // "até X" => [0, X]
-    } else if (typeof r.min === "number") {
-      out.filter.ValorVenda = [r.min, 9_999_999_999]; // "a partir de X" => [X, +inf]
-    }
+    if (typeof r.min === "number" && typeof r.max === "number") out.filter.ValorVenda = [r.min, r.max];
+    else if (typeof r.max === "number") out.filter.ValorVenda = [0, r.max];
+    else if (typeof r.min === "number") out.filter.ValorVenda = [r.min, 9_999_999_999];
   }
 
   return out;
 }
 
-// Normaliza paginação salva como {strategy,page_param,size_param} -> {type,param,sizeParam}
+// Normaliza paginação quando salva como {strategy,page_param,size_param}
 function normalizePaginationShape(pag: any): PaginationConfig | undefined {
   if (!pag) return undefined;
   if (pag.type) return pag as PaginationConfig;
@@ -338,22 +346,19 @@ export async function runSearch(
   // ——— builder de filtros para Vista a partir do "text"
   const isVista = typeof url === "string" && /vistahost\.com\.br/i.test(url);
   if (isVista) {
-    const currentPesquisa =
-      (plannedParams.pesquisa && typeof plannedParams.pesquisa === "object")
-        ? plannedParams.pesquisa
-        : {};
+    // 1) preserva defaults mesmo quando 'pesquisa' veio como STRING
+    const currentPesquisa = tryParsePesquisa(plannedParams.pesquisa);
 
+    // 2) constrói filtros a partir do texto
     const built = buildVistaPesquisaFromText(text);
 
-    // mescla preservando o que o default_query já tiver
-    const mergedFilter = {
-      ...(currentPesquisa.filter || {}),
-      ...(built.filter || {})
-    };
-
+    // 3) merge só em 'filter' (não mexe em 'fields', 'order', etc.)
     plannedParams.pesquisa = {
-      ...(currentPesquisa || {}),
-      filter: mergedFilter
+      ...currentPesquisa,
+      filter: {
+        ...(currentPesquisa?.filter || {}),
+        ...(built.filter || {})
+      }
     };
   }
 
