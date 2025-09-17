@@ -50,77 +50,102 @@ const sanitizeName = (name: string): string => {
   return sanitized.substring(0, 60);
 };
 
-/** ========= helpers de Inventory/Auto ========= */
-const BASE_URL = (process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "");
+// --------------------------------------------------
+// Helpers de Inventário
+// --------------------------------------------------
 
-async function tryAutoInventory(companyId: number, text: string, page = 1, pageSize = 5) {
-  const url = `${BASE_URL}/inventory/agent/auto`;
+/** Formata a lista de itens para texto curto e útil no WhatsApp */
+function formatInventoryReply(payload: {
+  integrationName?: string;
+  categoryHint?: string;
+  criteria?: any;
+  items?: any[];
+  page?: number;
+  pageSize?: number;
+  total?: number;
+}) {
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  const headerParts: string[] = [];
+
+  const cat = (payload.categoryHint || "").toString().toLowerCase();
+  if (cat) headerParts.push(cat);
+
+  const crit = payload.criteria || {};
+  const loc: string[] = [];
+  if (crit.neighborhood) loc.push(String(crit.neighborhood));
+  if (crit.city) loc.push(String(crit.city));
+  if (crit.state) loc.push(String(crit.state));
+  if (loc.length) headerParts.push(loc.join(", "));
+
+  const header =
+    headerParts.length
+      ? `Encontrei algumas opções de ${headerParts.join(" em ")}:\n`
+      : "Encontrei algumas opções:\n";
+
+  const fmtMoney = (v: any) => {
+    const n = typeof v === "number" ? v : Number(String(v).replace(/\D/g, ""));
+    if (!isFinite(n) || n <= 0) return "";
+    return `R$ ${n.toLocaleString("pt-BR")}`;
+  };
+
+  const lines = items.slice(0, payload.pageSize || 5).map((it: any, idx: number) => {
+    const title =
+      it.TituloSite || it.titulo || it.title || it.Categoria || `Item ${idx + 1}`;
+    const bairro = it.Bairro || it.bairro;
+    const cidade = it.Cidade || it.cidade;
+    const preco = it.ValorVenda ?? it.preco ?? it.Preco ?? it.valor;
+
+    const where = [bairro, cidade].filter(Boolean).join(", ");
+    const price = fmtMoney(preco);
+    const parts: string[] = [`• ${title}`];
+    if (where) parts.push(` – ${where}`);
+    if (price) parts.push(` – ${price}`);
+    return parts.join("");
+  });
+
+  const more =
+    payload.total && (payload.pageSize || 5) < payload.total
+      ? `\n\nQuer ver mais opções? É só mandar: "ver mais".`
+      : "";
+
+  return header + lines.join("\n") + more;
+}
+
+/** Chama o /inventory/agent/auto do próprio backend */
+async function tryInventoryAuto(companyId: number, text: string, page = 1, pageSize = 5) {
+  const base = (process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "");
+  const url = `${base}/inventory/agent/auto`;
+
   const t0 = Date.now();
   try {
     const { data } = await axios.post(url, { companyId, text, page, pageSize });
-    logger.info({
-      ctx: "OpenAiService",
-      step: "tryAutoInventory:response",
-      tookMs: Date.now() - t0,
-      matched: !!data?.matched,
-      total: data?.total ?? data?.items?.length ?? 0,
-      integrationId: data?.integrationId
-    }, "auto ok");
+    logger.info(
+      {
+        ctx: "OpenAiService",
+        step: "auto_lookup_ok",
+        tookMs: Date.now() - t0,
+        matched: !!data?.matched,
+        items: Array.isArray(data?.items) ? data.items.length : 0
+      },
+      "auto lookup"
+    );
     return data;
   } catch (err: any) {
-    logger.error({
-      ctx: "OpenAiService",
-      step: "tryAutoInventory:error",
-      error: err?.message,
-      status: err?.response?.status,
-      data: err?.response?.data
-    }, "auto fail");
+    logger.warn(
+      {
+        ctx: "OpenAiService",
+        step: "auto_lookup_fail",
+        tookMs: Date.now() - t0,
+        error: err?.message,
+        status: err?.response?.status
+      },
+      "auto lookup failed"
+    );
     return null;
   }
 }
 
-function pickText(o: any, keys: string[], def = "") {
-  for (const k of keys) {
-    const v = o?.[k];
-    if (v !== undefined && v !== null && String(v).trim() !== "") return String(v);
-  }
-  return def;
-}
-
-function formatInventoryItemsForReply(items: any[], categoryHint?: string) {
-  if (!Array.isArray(items) || !items.length) return "";
-
-  const lines: string[] = [];
-  const header = categoryHint
-    ? `Encontrei ${items.length} ${categoryHint.toLowerCase()} que combinam com o que você pediu:\n`
-    : `Encontrei ${items.length} opções que combinam com o que você pediu:\n`;
-  lines.push(header);
-
-  const max = Math.min(items.length, 5);
-  for (let i = 0; i < max; i++) {
-    const it = items[i];
-    // campos típicos do Vista
-    const titulo = pickText(it, ["TituloSite", "Titulo", "title", "Descricao", "Descrição"], "Opção");
-    const bairro = pickText(it, ["Bairro", "bairro"]);
-    const cidade = pickText(it, ["Cidade", "cidade"]);
-    const estado = pickText(it, ["Estado", "estado", "UF"]);
-    const codigo = pickText(it, ["Codigo", "Código", "codigo", "id"]);
-    const preco =
-      pickText(it, ["ValorVenda", "Preco", "Preço", "price"])
-        .replace(/\B(?=(\d{3})+(?!\d))/g, "."); // separador simples
-
-    const loc = [bairro, cidade, estado].filter(Boolean).join(" • ");
-    const line =
-      `• ${titulo}${loc ? `\n   📍 ${loc}` : ""}${preco ? `\n   💰 R$ ${preco}` : ""}${codigo ? `\n   #${codigo}` : ""}`;
-    lines.push(line);
-  }
-  if (items.length > max) {
-    lines.push(`\nQuer ver mais opções? Posso listar a próxima página 😉`);
-  }
-  return lines.join("\n");
-}
-
-/** ========= Tools dinâmicas (mantidas) ========= */
+/** Gera tools dinamicamente com base nas integrações da empresa */
 async function buildTools(companyId: number): Promise<ChatCompletionTool[]> {
   const integrations = await InventoryIntegration.findAll({ where: { companyId } });
   const tools = integrations.map((i) =>
@@ -128,12 +153,12 @@ async function buildTools(companyId: number): Promise<ChatCompletionTool[]> {
       type: "function",
       function: {
         name: `integration_${i.get("id")}`,
-        description: `Consulta a integração cadastrada: ${i.get("name")}`,
+        description: `Consulta dados reais na integração "${i.get("name")}" (categoria: ${i.get("categoryHint") || "geral"}). Use quando o cliente pedir itens dessa categoria.`,
         parameters: {
           type: "object",
           properties: {
             text: { type: "string", description: "Texto/critério de busca do cliente" },
-            filtros: { type: "object", description: "Filtros (ex.: bairro, quartos, preçoMax, marca...)" },
+            filtros: { type: "object", description: "Filtros (ex.: bairro, quartos, preçoMax...)" },
             page: { type: "integer", description: "Página da busca" },
             pageSize: { type: "integer", description: "Itens por página" }
           },
@@ -152,13 +177,13 @@ async function buildTools(companyId: number): Promise<ChatCompletionTool[]> {
   return tools;
 }
 
-/** Executa a integração via /inventory/agent/lookup (mantido para tool-call) */
+/** Executa a integração via /inventory/agent/lookup */
 async function executeIntegration(
   integrationId: number,
   args: any,
   companyId: number
 ) {
-  const url = `${BASE_URL}/inventory/agent/lookup`;
+  const url = `${(process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "")}/inventory/agent/lookup`;
 
   logger.info({
     ctx: "OpenAiService",
@@ -179,21 +204,25 @@ async function executeIntegration(
       pageSize: args.pageSize || 10
     });
 
+    const tookMs = Date.now() - t0;
+
     logger.info({
       ctx: "OpenAiService",
       step: "executeIntegration:response",
       integrationId,
-      tookMs: Date.now() - t0,
+      tookMs,
       total: data?.total ?? data?.items?.length ?? 0,
       hasError: !!data?.error
     }, "integration executed");
 
-    return data;
+    return data; // { items, total, ... }
   } catch (err: any) {
+    const tookMs = Date.now() - t0;
     logger.error({
       ctx: "OpenAiService",
       step: "executeIntegration:error",
       integrationId,
+      tookMs,
       error: err?.message,
       status: err?.response?.status,
       data: err?.response?.data
@@ -232,22 +261,7 @@ export const handleOpenAi = async (
       __dirname, "..", "..", "..", "public", `company${ticket.companyId}`
     );
 
-    // ❶ PRIMEIRO: tenta auto-rotear + pós-filtrar
-    const auto = await tryAutoInventory(ticket.companyId, bodyMessage, 1, 5);
-    if (auto?.matched && Array.isArray(auto.items) && auto.items.length) {
-      const reply = formatInventoryItemsForReply(auto.items, auto.categoryHint);
-      const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: `\u200e ${reply}` });
-      await verifyMessage(sent!, ticket, contact);
-      logger.info({
-        ctx: "OpenAiService",
-        step: "auto_reply_sent",
-        ticketId: ticket.id,
-        listed: auto.items.length
-      }, "sent auto-reply");
-      return;
-    }
-
-    // ❷ Se não houve match, seguimos com o LLM normal + tools como fallback
+    // cache de sessão do OpenAI v4
     let openai: SessionOpenAi;
     const idx = sessionsOpenAi.findIndex(s => s.id === ticket.id);
     if (idx === -1) {
@@ -259,6 +273,33 @@ export const handleOpenAi = async (
       openai = sessionsOpenAi[idx];
     }
 
+    // ------------------------------------------------------------------
+    // 1) FAST-PATH: tenta inventário automático antes da LLM
+    // ------------------------------------------------------------------
+    const auto = await tryInventoryAuto(ticket.companyId, bodyMessage, 1, 5);
+    if (auto?.matched && Array.isArray(auto.items) && auto.items.length) {
+      const reply = formatInventoryReply({
+        integrationName: auto.integrationName,
+        categoryHint: auto.categoryHint,
+        criteria: auto.criteria,
+        items: auto.items,
+        page: auto.page,
+        pageSize: auto.pageSize,
+        total: auto.total
+      });
+
+      const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, { text: `\u200e ${reply}` });
+      await verifyMessage(sentMessage!, ticket, contact);
+
+      logger.info(
+        { ctx: "OpenAiService", step: "auto_reply_sent", ticketId: ticket.id, count: auto.items.length },
+        "auto inventory reply sent"
+      );
+      return; // não precisa LLM neste caso
+    }
+    // ------------------------------------------------------------------
+
+    // histórico (para a LLM se precisar)
     const messages = await Message.findAll({
       where: { ticketId: ticket.id },
       order: [["createdAt", "ASC"]],
@@ -267,10 +308,9 @@ export const handleOpenAi = async (
 
     const promptSystem = `Você é um agente de atendimento multiempresas (SaaS).
 Use o nome ${sanitizeName(contact.name || "Amigo(a)")} para personalizar.
-Respeite ${openAiSettings.maxTokens} tokens.
+Respeite o limite de ${openAiSettings.maxTokens} tokens.
 Se precisar transferir, comece com 'Ação: Transferir para o setor de atendimento'.
-Quando houver integrações disponíveis, você PODE CHAMAR as ferramentas para buscar dados reais e listar opções ao cliente (ex.: imóveis). 
-Retorne respostas diretas e úteis, sem burocracia.\n
+Quando houver integrações disponíveis, você pode chamá-las para obter dados reais.\n
 ${openAiSettings.prompt}\n`;
 
     let messagesOpenAi: Array<{ role: "system" | "user" | "assistant" | "tool"; content: string; tool_call_id?: string }> = [];
@@ -286,8 +326,10 @@ ${openAiSettings.prompt}\n`;
     }
     messagesOpenAi.push({ role: "user", content: bodyMessage! });
 
+    // tools dinâmicas (plano B da LLM)
     const tools = await buildTools(ticket.companyId);
 
+    // 1ª chamada — com tools
     const chat = await openai.chat.completions.create({
       model: openAiSettings.model || "gpt-4o-mini",
       messages: messagesOpenAi as any,
@@ -308,6 +350,7 @@ ${openAiSettings.prompt}\n`;
 
     let response = chat.choices?.[0]?.message?.content;
 
+    // Se o modelo pedir tools, executa e refaz a completion
     if (chat.choices?.[0]?.message?.tool_calls) {
       for (const call of chat.choices[0].message.tool_calls) {
         const fnName = call.function.name; // "integration_7"
@@ -348,12 +391,14 @@ ${openAiSettings.prompt}\n`;
       response = chat2.choices?.[0]?.message?.content;
     }
 
+    // Transferência automática, se o modelo pedir
     if (response?.includes("Ação: Transferir para o setor de atendimento")) {
       logger.warn({ ctx: "OpenAiService", ticketId: ticket.id }, "model requested transfer");
       await transferQueue(openAiSettings.queueId, ticket, contact);
       response = response.replace("Ação: Transferir para o setor de atendimento", "").trim();
     }
 
+    // envio da resposta
     if (openAiSettings.voice === "texto") {
       const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
         text: `\u200e ${response || ""}`
