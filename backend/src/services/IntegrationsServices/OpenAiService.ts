@@ -50,13 +50,80 @@ const sanitizeName = (name: string): string => {
   return sanitized.substring(0, 60);
 };
 
-/** ========== Ferramentas ========== */
+/** ========= helpers de Inventory/Auto ========= */
+const BASE_URL = (process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "");
 
-/** Gera tools dinamicamente com base nas integrações da empresa */
+async function tryAutoInventory(companyId: number, text: string, page = 1, pageSize = 5) {
+  const url = `${BASE_URL}/inventory/agent/auto`;
+  const t0 = Date.now();
+  try {
+    const { data } = await axios.post(url, { companyId, text, page, pageSize });
+    logger.info({
+      ctx: "OpenAiService",
+      step: "tryAutoInventory:response",
+      tookMs: Date.now() - t0,
+      matched: !!data?.matched,
+      total: data?.total ?? data?.items?.length ?? 0,
+      integrationId: data?.integrationId
+    }, "auto ok");
+    return data;
+  } catch (err: any) {
+    logger.error({
+      ctx: "OpenAiService",
+      step: "tryAutoInventory:error",
+      error: err?.message,
+      status: err?.response?.status,
+      data: err?.response?.data
+    }, "auto fail");
+    return null;
+  }
+}
+
+function pickText(o: any, keys: string[], def = "") {
+  for (const k of keys) {
+    const v = o?.[k];
+    if (v !== undefined && v !== null && String(v).trim() !== "") return String(v);
+  }
+  return def;
+}
+
+function formatInventoryItemsForReply(items: any[], categoryHint?: string) {
+  if (!Array.isArray(items) || !items.length) return "";
+
+  const lines: string[] = [];
+  const header = categoryHint
+    ? `Encontrei ${items.length} ${categoryHint.toLowerCase()} que combinam com o que você pediu:\n`
+    : `Encontrei ${items.length} opções que combinam com o que você pediu:\n`;
+  lines.push(header);
+
+  const max = Math.min(items.length, 5);
+  for (let i = 0; i < max; i++) {
+    const it = items[i];
+    // campos típicos do Vista
+    const titulo = pickText(it, ["TituloSite", "Titulo", "title", "Descricao", "Descrição"], "Opção");
+    const bairro = pickText(it, ["Bairro", "bairro"]);
+    const cidade = pickText(it, ["Cidade", "cidade"]);
+    const estado = pickText(it, ["Estado", "estado", "UF"]);
+    const codigo = pickText(it, ["Codigo", "Código", "codigo", "id"]);
+    const preco =
+      pickText(it, ["ValorVenda", "Preco", "Preço", "price"])
+        .replace(/\B(?=(\d{3})+(?!\d))/g, "."); // separador simples
+
+    const loc = [bairro, cidade, estado].filter(Boolean).join(" • ");
+    const line =
+      `• ${titulo}${loc ? `\n   📍 ${loc}` : ""}${preco ? `\n   💰 R$ ${preco}` : ""}${codigo ? `\n   #${codigo}` : ""}`;
+    lines.push(line);
+  }
+  if (items.length > max) {
+    lines.push(`\nQuer ver mais opções? Posso listar a próxima página 😉`);
+  }
+  return lines.join("\n");
+}
+
+/** ========= Tools dinâmicas (mantidas) ========= */
 async function buildTools(companyId: number): Promise<ChatCompletionTool[]> {
   const integrations = await InventoryIntegration.findAll({ where: { companyId } });
-
-  const tools: ChatCompletionTool[] = integrations.map((i) =>
+  const tools = integrations.map((i) =>
     ({
       type: "function",
       function: {
@@ -66,7 +133,7 @@ async function buildTools(companyId: number): Promise<ChatCompletionTool[]> {
           type: "object",
           properties: {
             text: { type: "string", description: "Texto/critério de busca do cliente" },
-            filtros: { type: "object", description: "Filtros (ex.: bairro, quartos, preçoMax, ...)" },
+            filtros: { type: "object", description: "Filtros (ex.: bairro, quartos, preçoMax, marca...)" },
             page: { type: "integer", description: "Página da busca" },
             pageSize: { type: "integer", description: "Itens por página" }
           },
@@ -75,26 +142,6 @@ async function buildTools(companyId: number): Promise<ChatCompletionTool[]> {
       }
     }) as ChatCompletionTool
   );
-
-  // 🔹 Ferramenta global (auto-rota por Dica de Categoria)
-  tools.push({
-    type: "function",
-    function: {
-      name: "inventory_auto_lookup",
-      description:
-        "Tenta automaticamente a melhor integração de inventário (usando a Dica de Categoria) e retorna itens filtrados conforme o texto do cliente.",
-      parameters: {
-        type: "object",
-        properties: {
-          text: { type: "string", description: "Texto do cliente (ex.: 'apartamento 2 quartos em Campinas até 500 mil')" },
-          filtros: { type: "object" },
-          page: { type: "integer" },
-          pageSize: { type: "integer" }
-        },
-        required: ["text"]
-      }
-    }
-  } as ChatCompletionTool);
 
   logger.debug({
     ctx: "OpenAiService",
@@ -105,13 +152,13 @@ async function buildTools(companyId: number): Promise<ChatCompletionTool[]> {
   return tools;
 }
 
-/** Executa /inventory/agent/lookup (integração específica) */
+/** Executa a integração via /inventory/agent/lookup (mantido para tool-call) */
 async function executeIntegration(
   integrationId: number,
   args: any,
   companyId: number
 ) {
-  const url = `${(process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "")}/inventory/agent/lookup`;
+  const url = `${BASE_URL}/inventory/agent/lookup`;
 
   logger.info({
     ctx: "OpenAiService",
@@ -119,36 +166,34 @@ async function executeIntegration(
     integrationId,
     companyId,
     args
-  }, "calling InventoryAgentController.lookup");
+  }, "calling InventoryAgentController");
 
   const t0 = Date.now();
   try {
     const { data } = await axios.post(url, {
       integrationId,
       companyId,
-      text: args?.text,
-      filtros: args?.filtros || {},
-      page: args?.page || 1,
-      pageSize: args?.pageSize || 10
+      text: args.text,
+      filtros: args.filtros || {},
+      page: args.page || 1,
+      pageSize: args.pageSize || 10
     });
 
-    const tookMs = Date.now() - t0;
     logger.info({
       ctx: "OpenAiService",
       step: "executeIntegration:response",
       integrationId,
-      tookMs,
+      tookMs: Date.now() - t0,
       total: data?.total ?? data?.items?.length ?? 0,
       hasError: !!data?.error
     }, "integration executed");
+
     return data;
   } catch (err: any) {
-    const tookMs = Date.now() - t0;
     logger.error({
       ctx: "OpenAiService",
       step: "executeIntegration:error",
       integrationId,
-      tookMs,
       error: err?.message,
       status: err?.response?.status,
       data: err?.response?.data
@@ -157,50 +202,6 @@ async function executeIntegration(
   }
 }
 
-/** Executa /inventory/agent/auto (roteamento automático) */
-async function executeAuto(args: any, companyId: number) {
-  const url = `${(process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "")}/inventory/agent/auto`;
-
-  logger.info({
-    ctx: "OpenAiService",
-    step: "executeAuto:request",
-    companyId,
-    args
-  }, "calling InventoryAgentController.auto");
-
-  const t0 = Date.now();
-  try {
-    const { data } = await axios.post(url, {
-      companyId,
-      text: args?.text,
-      filtros: args?.filtros || {},
-      page: args?.page || 1,
-      pageSize: args?.pageSize || 10
-    });
-    const tookMs = Date.now() - t0;
-    logger.info({
-      ctx: "OpenAiService",
-      step: "executeAuto:response",
-      tookMs,
-      matched: data?.matched,
-      total: data?.total ?? data?.items?.length ?? 0
-    }, "auto executed");
-    return data;
-  } catch (err: any) {
-    const tookMs = Date.now() - t0;
-    logger.error({
-      ctx: "OpenAiService",
-      step: "executeAuto:error",
-      tookMs,
-      error: err?.message,
-      status: err?.response?.status,
-      data: err?.response?.data
-    }, "auto execution failed");
-    return { error: "AutoExecutionFailed", message: err?.message || "Falha na execução" };
-  }
-}
-
-/** ========== Handler principal ========== */
 export const handleOpenAi = async (
   openAiSettings: IOpenAi,
   msg: proto.IWebMessageInfo,
@@ -231,7 +232,22 @@ export const handleOpenAi = async (
       __dirname, "..", "..", "..", "public", `company${ticket.companyId}`
     );
 
-    // cache de sessão do OpenAI v4
+    // ❶ PRIMEIRO: tenta auto-rotear + pós-filtrar
+    const auto = await tryAutoInventory(ticket.companyId, bodyMessage, 1, 5);
+    if (auto?.matched && Array.isArray(auto.items) && auto.items.length) {
+      const reply = formatInventoryItemsForReply(auto.items, auto.categoryHint);
+      const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: `\u200e ${reply}` });
+      await verifyMessage(sent!, ticket, contact);
+      logger.info({
+        ctx: "OpenAiService",
+        step: "auto_reply_sent",
+        ticketId: ticket.id,
+        listed: auto.items.length
+      }, "sent auto-reply");
+      return;
+    }
+
+    // ❷ Se não houve match, seguimos com o LLM normal + tools como fallback
     let openai: SessionOpenAi;
     const idx = sessionsOpenAi.findIndex(s => s.id === ticket.id);
     if (idx === -1) {
@@ -243,27 +259,19 @@ export const handleOpenAi = async (
       openai = sessionsOpenAi[idx];
     }
 
-    // histórico
     const messages = await Message.findAll({
       where: { ticketId: ticket.id },
       order: [["createdAt", "ASC"]],
       limit: openAiSettings.maxMessages
     });
 
-    // 🔸 Prompt do sistema — PUXAR INTEGRAÇÃO PRIMEIRO
     const promptSystem = `Você é um agente de atendimento multiempresas (SaaS).
 Use o nome ${sanitizeName(contact.name || "Amigo(a)")} para personalizar.
-Respeite o limite de ${openAiSettings.maxTokens} tokens.
-
-Regras importantes:
-1) Se a mensagem do cliente indicar busca de produtos, imóveis, veículos ou estoque, TENTE PRIMEIRO obter dados reais chamando uma ferramenta de integração.
-2) Se você não souber qual integração usar, chame a ferramenta "inventory_auto_lookup" com:
-   { "text": "<última mensagem do cliente>", "page": 1, "pageSize": 5 }
-3) Só transfira para humano se não houver resultados úteis ou se o cliente pedir explicitamente.
-4) Quando houver integrações específicas (integration_{id}), você também pode chamá-las passando {text, filtros, page, pageSize}.
-
-${openAiSettings.prompt}
-`;
+Respeite ${openAiSettings.maxTokens} tokens.
+Se precisar transferir, comece com 'Ação: Transferir para o setor de atendimento'.
+Quando houver integrações disponíveis, você PODE CHAMAR as ferramentas para buscar dados reais e listar opções ao cliente (ex.: imóveis). 
+Retorne respostas diretas e úteis, sem burocracia.\n
+${openAiSettings.prompt}\n`;
 
     let messagesOpenAi: Array<{ role: "system" | "user" | "assistant" | "tool"; content: string; tool_call_id?: string }> = [];
     messagesOpenAi.push({ role: "system", content: promptSystem });
@@ -278,10 +286,8 @@ ${openAiSettings.prompt}
     }
     messagesOpenAi.push({ role: "user", content: bodyMessage! });
 
-    // tools dinâmicas
     const tools = await buildTools(ticket.companyId);
 
-    // 1ª chamada — com tools
     const chat = await openai.chat.completions.create({
       model: openAiSettings.model || "gpt-4o-mini",
       messages: messagesOpenAi as any,
@@ -302,40 +308,22 @@ ${openAiSettings.prompt}
 
     let response = chat.choices?.[0]?.message?.content;
 
-    // Se o modelo pedir tools, executa e refaz a completion
     if (chat.choices?.[0]?.message?.tool_calls) {
       for (const call of chat.choices[0].message.tool_calls) {
-        let args: any = {};
-        try {
-          args = JSON.parse(call.function.arguments || "{}");
-        } catch {
-          args = {};
-        }
-
-        const fnName = call.function.name; // "inventory_auto_lookup" OU "integration_{id}"
+        const fnName = call.function.name; // "integration_7"
+        const args = JSON.parse(call.function.arguments || "{}");
+        const integrationId = parseInt(fnName.replace("integration_", ""), 10);
 
         logger.info({
           ctx: "OpenAiService",
           step: "tool_call_execute",
           ticketId: ticket.id,
-          fnName,
+          integrationId,
           args
         }, "executing tool_call");
 
-        // 🔹 Tratamento da ferramenta global (auto)
-        if (fnName === "inventory_auto_lookup") {
-          const result = await executeAuto(args, ticket.companyId);
-          messagesOpenAi.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: JSON.stringify(result)
-          });
-          continue;
-        }
-
-        // 🔹 Integração específica
-        const integrationId = parseInt(fnName.replace("integration_", ""), 10);
         const result = await executeIntegration(integrationId, args, ticket.companyId);
+
         messagesOpenAi.push({
           role: "tool",
           tool_call_id: call.id,
@@ -360,14 +348,12 @@ ${openAiSettings.prompt}
       response = chat2.choices?.[0]?.message?.content;
     }
 
-    // Transferência automática, se o modelo pedir
     if (response?.includes("Ação: Transferir para o setor de atendimento")) {
       logger.warn({ ctx: "OpenAiService", ticketId: ticket.id }, "model requested transfer");
       await transferQueue(openAiSettings.queueId, ticket, contact);
       response = response.replace("Ação: Transferir para o setor de atendimento", "").trim();
     }
 
-    // envio da resposta
     if (openAiSettings.voice === "texto") {
       const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
         text: `\u200e ${response || ""}`
