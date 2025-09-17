@@ -9,6 +9,19 @@ function resolveCompanyId(req: Request, bodyCompanyId?: number) {
   return (req as any)?.user?.companyId ?? bodyCompanyId;
 }
 
+// Converte os critérios em um objeto de filtros para o provider.
+// Se a integração tiver mapeamento de filtros (filterMap) no RunSearchService,
+// ele poderá traduzir estes nomes genéricos para os campos do provedor.
+function buildProviderFiltersFromCriteria(criteria: ReturnType<typeof parseCriteriaFromText>) {
+  const filtros: Record<string, any> = {};
+  if (criteria.city) filtros.city = criteria.city;
+  if (criteria.state) filtros.state = criteria.state;
+  if (criteria.neighborhood) filtros.neighborhood = criteria.neighborhood;
+  if (criteria.bedrooms) filtros.bedrooms = criteria.bedrooms;
+  if (criteria.typeHint) filtros.type = criteria.typeHint;
+  return filtros;
+}
+
 /** ========= Antigo: /inventory/agent/lookup (mantido) ========= */
 export const agentLookup = async (req: Request, res: Response) => {
   const t0 = Date.now();
@@ -19,7 +32,7 @@ export const agentLookup = async (req: Request, res: Response) => {
       companyId: companyIdFromBody,
       integrationId,
       text = "",
-      filtros = {},
+      filtros: filtrosBody = {},
       page = 1,
       pageSize = 5
     } = (req.body || {}) as any;
@@ -36,6 +49,10 @@ export const agentLookup = async (req: Request, res: Response) => {
     const integ = await InventoryIntegration.findOne({ where: { id: integrationId, companyId } });
     if (!integ) return res.status(404).json({ error: "IntegrationNotFound" });
 
+    const criteria = parseCriteriaFromText(text);
+    const filtrosFromCriteria = buildProviderFiltersFromCriteria(criteria);
+    const filtros = { ...filtrosFromCriteria, ...filtrosBody };
+
     const out: RunSearchOutput = await runSearch(integ as any, {
       params: {},
       page: 1,
@@ -44,8 +61,7 @@ export const agentLookup = async (req: Request, res: Response) => {
       filtros
     });
 
-    // Filtro LOCAL
-    const criteria = parseCriteriaFromText(text);
+    // Filtro LOCAL (hard + ranking)
     const ranked = filterAndRankItems(out.items || [], criteria);
     const items = paginateRanked(ranked, page, pageSize);
 
@@ -57,7 +73,7 @@ export const agentLookup = async (req: Request, res: Response) => {
     return res.json({
       companyId,
       integrationId: Number(integ.get("id")),
-      integrationName: integ.get("name") || "integration",
+      integrationName: (integ.get("name") as string) || "integration",
       categoryHint: integ.get("categoryHint"),
       query: { text, filtros, page, pageSize, criteria },
       items,
@@ -82,7 +98,8 @@ export const agentAuto = async (req: Request, res: Response) => {
       companyId: companyIdFromBody,
       text = "",
       page = 1,
-      pageSize = 5
+      pageSize = 5,
+      filtros: filtrosBody = {}
     } = (req.body || {}) as any;
 
     logger.info({ corrId, ctx: "AgentAuto", step: "in", page, pageSize, text }, "agent_auto_in");
@@ -93,7 +110,7 @@ export const agentAuto = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "TextMissing", message: "text required" });
     }
 
-    // 1) escolhe a integração pela Dica de Categoria
+    // 1) escolhe a integração pela dica de categoria
     const integ = await chooseIntegrationByText(companyId, text);
     if (!integ) {
       logger.info({ corrId, ctx: "AgentAuto", step: "no_match" }, "agent_auto_no_match");
@@ -117,17 +134,21 @@ export const agentAuto = async (req: Request, res: Response) => {
       categoryHint: String(integ.get("categoryHint"))
     }, "agent_auto_chosen");
 
-    // 2) chama o provedor (sem mexer em 'pesquisa')
+    // 2) critérios -> filtros do provider (para vir "certo" da fonte, quando suportado)
+    const criteria = parseCriteriaFromText(text);
+    const filtrosFromCriteria = buildProviderFiltersFromCriteria(criteria);
+    const filtros = { ...filtrosFromCriteria, ...filtrosBody };
+
+    // 3) chama o provedor (lote grande)
     const out: RunSearchOutput = await runSearch(integ as any, {
       params: {},
       page: 1,
-      pageSize: 50, // lote para filtrar
+      pageSize: 50, // lote para filtrar localmente
       text,
-      filtros: {}
+      filtros
     });
 
-    // 3) filtra localmente e pagina
-    const criteria = parseCriteriaFromText(text);
+    // 4) hard-filter local + ranking + paginação
     const ranked = filterAndRankItems(out.items || [], criteria);
     const items = paginateRanked(ranked, page, pageSize);
 
@@ -148,9 +169,10 @@ export const agentAuto = async (req: Request, res: Response) => {
       companyId,
       matched: true,
       integrationId: Number(integ.get("id")),
-      integrationName: integ.get("name") || "integration",
+      integrationName: (integ.get("name") as string) || "integration",
       categoryHint: integ.get("categoryHint"),
       criteria,
+      query: { text, filtros, page, pageSize },
       items,
       total: ranked.length,
       page,
