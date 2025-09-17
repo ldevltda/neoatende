@@ -12,6 +12,8 @@ function resolveCompanyId(req: Request, bodyCompanyId?: number) {
 /** ========= Antigo: /inventory/agent/lookup (mantido) ========= */
 export const agentLookup = async (req: Request, res: Response) => {
   const t0 = Date.now();
+  const corrId = `${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+
   try {
     const {
       companyId: companyIdFromBody,
@@ -21,6 +23,11 @@ export const agentLookup = async (req: Request, res: Response) => {
       page = 1,
       pageSize = 5
     } = (req.body || {}) as any;
+
+    logger.info(
+      { corrId, ctx: "AgentLookup", step: "in", integrationId, page, pageSize, text },
+      "agent_lookup_in"
+    );
 
     const companyId = resolveCompanyId(req, companyIdFromBody);
     if (!companyId || !integrationId) {
@@ -43,8 +50,8 @@ export const agentLookup = async (req: Request, res: Response) => {
     const items = paginateRanked(ranked, page, pageSize);
 
     logger.info(
-      { ctx: "AgentLookup", integrationId, tookMs: Date.now() - t0, total: ranked.length },
-      "lookup finished"
+      { corrId, ctx: "AgentLookup", integrationId, tookMs: Date.now() - t0, returned: items.length, total: ranked.length },
+      "agent_lookup_out"
     );
 
     return res.json({
@@ -60,7 +67,7 @@ export const agentLookup = async (req: Request, res: Response) => {
       raw: out.raw
     });
   } catch (err: any) {
-    logger.error({ ctx: "AgentLookup", err }, "lookup error");
+    logger.error({ corrId, ctx: "AgentLookup", step: "error", error: err?.message }, "agent_lookup_err");
     return res.status(500).json({ error: "AgentLookupFailed", message: err?.message });
   }
 };
@@ -68,6 +75,8 @@ export const agentLookup = async (req: Request, res: Response) => {
 /** ========= Novo: /inventory/agent/auto (decide integração + filtra local) ========= */
 export const agentAuto = async (req: Request, res: Response) => {
   const t0 = Date.now();
+  const corrId = `${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+
   try {
     const {
       companyId: companyIdFromBody,
@@ -75,6 +84,8 @@ export const agentAuto = async (req: Request, res: Response) => {
       page = 1,
       pageSize = 5
     } = (req.body || {}) as any;
+
+    logger.info({ corrId, ctx: "AgentAuto", step: "in", page, pageSize, text }, "agent_auto_in");
 
     const companyId = resolveCompanyId(req, companyIdFromBody);
     if (!companyId) return res.status(400).json({ error: "CompanyIdMissing" });
@@ -85,6 +96,7 @@ export const agentAuto = async (req: Request, res: Response) => {
     // 1) escolhe a integração pela Dica de Categoria
     const integ = await chooseIntegrationByText(companyId, text);
     if (!integ) {
+      logger.info({ corrId, ctx: "AgentAuto", step: "no_match" }, "agent_auto_no_match");
       return res.json({
         companyId,
         matched: false,
@@ -95,6 +107,15 @@ export const agentAuto = async (req: Request, res: Response) => {
         pageSize
       });
     }
+
+    logger.info({
+      corrId,
+      ctx: "AgentAuto",
+      step: "choose",
+      integrationId: Number(integ.get("id")),
+      name: String(integ.get("name")),
+      categoryHint: String(integ.get("categoryHint"))
+    }, "agent_auto_chosen");
 
     // 2) chama o provedor (sem mexer em 'pesquisa')
     const out: RunSearchOutput = await runSearch(integ as any, {
@@ -112,14 +133,15 @@ export const agentAuto = async (req: Request, res: Response) => {
 
     logger.info(
       {
+        corrId,
         ctx: "AgentAuto",
+        step: "out",
         integrationId: Number(integ.get("id")),
         tookMs: Date.now() - t0,
-        criteria,
         before: Array.isArray(out.items) ? out.items.length : 0,
         after: ranked.length
       },
-      "auto finished"
+      "agent_auto_out"
     );
 
     return res.json({
@@ -136,7 +158,7 @@ export const agentAuto = async (req: Request, res: Response) => {
       raw: out.raw
     });
   } catch (err: any) {
-    logger.error({ ctx: "AgentAuto", err }, "auto error");
+    logger.error({ corrId, ctx: "AgentAuto", step: "error", error: err?.message }, "agent_auto_err");
     return res.status(500).json({ error: "AgentAutoFailed", message: err?.message });
   }
 };
