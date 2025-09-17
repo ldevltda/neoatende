@@ -759,26 +759,35 @@ const handleOpenAi = async (
 
   if (msg.messageStubType) return;
 
-  // ============ INVENTORY AUTO antes do LLM ============
+  // ======== INVENTORY AUTO antes do LLM (única chamada) ========
   try {
     const base = (process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "");
+    const bearer = makeServiceBearer(ticket.companyId);
+
     const t0 = Date.now();
     logger.info(
-      {
-        ctx: "InventoryAuto",
-        step: "request",
-        companyId: ticket.companyId,
-        text: bodyMessage
-      },
+      { ctx: "InventoryAuto", step: "request", companyId: ticket.companyId, text: bodyMessage },
       "calling /inventory/agent/auto"
     );
 
-    const { data: auto } = await axios.post(`${base}/inventory/agent/auto`, {
-      companyId: ticket.companyId,
-      text: bodyMessage,
-      page: 1,
-      pageSize: 5
-    });
+    const { data: auto } = await axios.post(
+      `${base}/inventory/agent/auto`,
+      {
+        companyId: ticket.companyId,
+        text: bodyMessage,
+        page: 1,
+        pageSize: 5
+      },
+      {
+        headers: {
+          Authorization: bearer,
+          "Content-Type": "application/json",
+          Accept: "application/json"
+        },
+        timeout: 10000,
+        validateStatus: () => true
+      }
+    );
 
     logger.info(
       {
@@ -786,27 +795,31 @@ const handleOpenAi = async (
         step: "response",
         tookMs: Date.now() - t0,
         matched: !!auto?.matched,
-        total: auto?.total ?? (auto?.items?.length || 0)
+        total: auto?.total ?? (auto?.items?.length || 0),
+        status: auto?.status ?? 200
       },
       "auto finished"
     );
 
     if (auto?.matched && (auto?.items?.length || 0) > 0) {
       const reply = formatInventoryReply(auto);
-      const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
-        text: reply
-      });
+      const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, { text: reply });
       await verifyMessage(sentMessage!, ticket, contact);
-      // se encontrou itens, NÃO chama LLM agora
-      return;
+      return; // encontrou itens → não chama LLM
     }
   } catch (err: any) {
     logger.error(
-      { ctx: "InventoryAuto", step: "error", error: err?.message },
+      {
+        ctx: "InventoryAuto",
+        step: "error",
+        error: err?.message,
+        status: err?.response?.status,
+        data: err?.response?.data
+      },
       "auto call failed (will fallback to LLM)"
     );
   }
-  // =====================================================
+  // =============================================================
 
   const publicFolder: string = path.resolve(
     __dirname,
