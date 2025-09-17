@@ -684,6 +684,49 @@ export const keepOnlySpecifiedChars = (str: string) => {
   return str.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚâêîôûÂÊÎÔÛãõÃÕçÇ!?.,;:\s]/g, "");
 };
 
+// ==== INVENTORY STATE + FILTER HELPERS ====
+
+// chave de cache por ticket
+type InvState = {
+  originalText: string;
+  page: number;
+  pageSize: number;
+  filters?: any | null;
+};
+const invKey = (t: Ticket) => `inventory:state:${t.companyId}:${t.id}`;
+
+// extrai filtros básicos do texto (fallback do cliente)
+function extractFiltersFromText(txt: string) {
+  const norm = (s: string) =>
+    (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+  const t = norm(txt);
+  const out: any = {};
+
+  // quartos / dormitórios
+  const mQ = t.match(/(\d+)\s*(quartos?|qts?|dormitorios?)/);
+  if (mQ) out.dormitorios = parseInt(mQ[1], 10);
+
+  // bairro
+  const mB = t.match(/bairro\s*(de|do|da)?\s*([a-z0-9\s\-]+)/);
+  if (mB) out.bairro = mB[2].trim();
+
+  // cidade/UF (ex.: sao jose/sc)
+  const mC = t.match(/([a-z\s]+)\/([a-z]{2})/);
+  if (mC) {
+    out.cidade = mC[1].trim();
+    out.uf = mC[2].toUpperCase();
+  }
+
+  // cidade sem UF (heurística leve)
+  if (!out.cidade) {
+    const mCidade = t.match(/\b(sao jose|florianopolis|palhoca|biguacu)\b/);
+    if (mCidade) out.cidade = mCidade[1].trim();
+  }
+
+  return out;
+}
+
 // ==== Helpers de inventário (formatação de itens) ====
 const pick = (obj: any, keys: string[]) => keys.find(k => obj?.[k] != null && obj?.[k] !== "" && obj?.[k] !== "0");
 
@@ -759,25 +802,60 @@ const handleOpenAi = async (
 
   if (msg.messageStubType) return;
 
-  // ======== INVENTORY AUTO antes do LLM (única chamada) ========
+  // ======== INVENTORY AUTO com paginação e filtros ========
   try {
     const base = (process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "");
     const bearer = makeServiceBearer(ticket.companyId);
 
+    const wantMore = /\b(ver mais|mais op(c|ç)oes|proxima pagina|pr[oó]xima p[aá]gina)\b/i.test(bodyMessage || "");
+    const pageSize = 5;
+
+    // carrega estado anterior (se houver)
+    let invState: InvState | null = null;
+    try {
+      const raw = await cacheLayer.get(invKey(ticket));
+      invState = raw ? (JSON.parse(raw) as InvState) : null;
+    } catch { invState = null; }
+
+    // decide texto base, página e filtros
+    let page = 1;
+    let originalText = bodyMessage!;
+    let clientFilters: any = null;
+
+    if (wantMore && invState) {
+      page = invState.page + 1;
+      originalText = invState.originalText;
+      clientFilters = invState.filters || null;
+    } else {
+      clientFilters = extractFiltersFromText(originalText);
+    }
+
+    const payload: any = {
+      companyId: ticket.companyId,
+      text: originalText,
+      page,
+      pageSize
+    };
+
+    // Caminho A: se o backend aceitar "filters" (ideal)
+    if (clientFilters && Object.keys(clientFilters).length) {
+      payload.filters = clientFilters;
+    }
+
+    // Caminho B: fallback — injeta dica de filtros no texto
+    if (!payload.filters && clientFilters && Object.keys(clientFilters).length) {
+      payload.text = `${originalText}\n\n[filtros]\n- dormitorios: ${clientFilters.dormitorios ?? ""}\n- bairro: ${clientFilters.bairro ?? ""}\n- cidade: ${clientFilters.cidade ?? ""}\n- uf: ${clientFilters.uf ?? ""}`.trim();
+    }
+
     const t0 = Date.now();
     logger.info(
-      { ctx: "InventoryAuto", step: "request", companyId: ticket.companyId, text: bodyMessage },
+      { ctx: "InventoryAuto", step: "request", companyId: ticket.companyId, text: payload.text, page, pageSize },
       "calling /inventory/agent/auto"
     );
 
     const { data: auto } = await axios.post(
       `${base}/inventory/agent/auto`,
-      {
-        companyId: ticket.companyId,
-        text: bodyMessage,
-        page: 1,
-        pageSize: 5
-      },
+      payload,
       {
         headers: {
           Authorization: bearer,
@@ -801,11 +879,36 @@ const handleOpenAi = async (
       "auto finished"
     );
 
+    // houve itens → envia, salva estado e sai
     if (auto?.matched && (auto?.items?.length || 0) > 0) {
-      const reply = formatInventoryReply(auto);
+      // salva estado p/ próxima página
+      const newState: InvState = {
+        originalText,
+        page,
+        pageSize,
+        filters: payload.filters ?? clientFilters ?? invState?.filters ?? null
+      };
+      await cacheLayer.set(invKey(ticket), JSON.stringify(newState), "EX", 60 * 30); // 30min
+
+      // ajusta rodapé de "ver mais" com base em total x página
+      const reply = formatInventoryReply({
+        ...auto,
+        page,
+        pageSize
+      });
+
       const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, { text: reply });
       await verifyMessage(sentMessage!, ticket, contact);
-      return; // encontrou itens → não chama LLM
+      return; // não chama LLM
+    }
+
+    // não houve itens:
+    if (wantMore) {
+      const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
+        text: "Não tenho mais resultados para mostrar agora. Quer refinar a busca? Me diga *bairro*, *cidade/UF* e *nº de quartos*."
+      });
+      await verifyMessage(sentMessage!, ticket, contact);
+      return; // não chama LLM
     }
   } catch (err: any) {
     logger.error(
