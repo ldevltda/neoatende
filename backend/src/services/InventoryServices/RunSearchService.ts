@@ -35,7 +35,7 @@ export type RunSearchInput = {
   params?: Record<string, any>;
   page?: number;
   pageSize?: number;
-  text?: string;
+  text?: string;            // ignorado para o provider (apenas ecoado no response pelo controller)
   filtros?: Record<string, any>;
 };
 
@@ -89,48 +89,42 @@ function normalizeItems(items: any[], rolemap?: any): any[] {
   if (!Array.isArray(items)) return [];
   if (!rolemap || typeof rolemap !== "object") return items;
 
-  // Detecta formato novo ({ listPath, fields: { k: {path} | "path" } })
+  // Suporta rolemap novo ({ fields: { k: "path" | {path} } }) e antigo ({ k: "path" })
   let mapping: Record<string, string> = {};
-  if (rolemap && typeof rolemap === "object" && rolemap.fields) {
-    const fields = rolemap.fields as Record<string, any>;
-    for (const [k, v] of Object.entries(fields)) {
+  if (rolemap.fields && typeof rolemap.fields === "object") {
+    for (const [k, v] of Object.entries(rolemap.fields as Record<string, any>)) {
       if (typeof v === "string") mapping[k] = v;
       else if (v && typeof v === "object" && typeof (v as any).path === "string") {
         mapping[k] = (v as any).path;
       }
     }
   } else {
-    // Formato antigo (campo -> "TituloSite")
     mapping = rolemap as Record<string, string>;
   }
-
-  // Se por algum motivo não houver mapeamento útil, devolve itens crus
-  if (!mapping || !Object.keys(mapping).length) return items;
+  if (!Object.keys(mapping).length) return items;
 
   const stripRoot = (p: string) => String(p).replace(/^\$\./, "");
 
-  return items.map((src) => {
+  return items.map(src => {
     const dst: Record<string, any> = {};
     for (const [toKey, fromPathRaw] of Object.entries(mapping)) {
       if (!fromPathRaw) continue;
-      const fromPath = stripRoot(fromPathRaw as string);
+      const fromPath = stripRoot(fromPathRaw);
       const val = deepGet(src, fromPath, undefined);
       if (val !== undefined) dst[toKey] = val;
     }
-    // só usa o mapeado se pegou ao menos 1 valor; senão, devolve o objeto original
     return Object.keys(dst).length ? dst : src;
   });
 }
 
-/** ←—— Tipagem EXPLÍCITA do retorno evita “void” */
+/** Extrai items/total respeitando schema, inclusive "$.*" (dicionário numerado) */
 function extractFromResponse(
   respData: any,
   schema?: { itemsPath?: string; totalPath?: string }
 ): { items: any[]; total?: number } {
-  let itemsPath = schema?.itemsPath || "data.items";
+  const itemsPath = schema?.itemsPath || "data.items";
   const totalPath = schema?.totalPath || "data.total";
 
-  // Caso especial: itens no ROOT como dicionário numerado (Vista) — usamos "$.*"
   if (itemsPath === "$.*") {
     if (Array.isArray(respData)) {
       return { items: respData, total: deepGet(respData, totalPath, undefined) };
@@ -155,6 +149,21 @@ function extractFromResponse(
   return { items: Array.isArray(items) ? items : [], total };
 }
 
+/** Normaliza paginação salva como {strategy,page_param,size_param} -> {type,param,sizeParam} */
+function normalizePaginationShape(pag: any): PaginationConfig | undefined {
+  if (!pag) return undefined;
+  if ((pag as any).type) return pag as PaginationConfig;
+  if ((pag as any).strategy) {
+    const typeMap: any = { page: "page", offset: "offset", cursor: "cursor", none: "none" };
+    return {
+      type: typeMap[pag.strategy] || "none",
+      param: pag.page_param || (pag.strategy === "offset" ? "offset" : "page"),
+      sizeParam: pag.size_param || (pag.strategy === "offset" ? "limit" : "pageSize")
+    };
+  }
+  return pag as PaginationConfig;
+}
+
 function applyPagination(
   planned: Record<string, any>,
   pagination: PaginationConfig | undefined,
@@ -171,145 +180,6 @@ function applyPagination(
     planned[pName] = Math.max(0, (page - 1) * pageSize);
     planned[sName] = pageSize;
   }
-}
-
-/* =======================
-   Builders de filtros (Vista)
-   ======================= */
-
-// Parse seguro p/ quando 'pesquisa' vier como string JSON
-function tryParsePesquisa(p: any): any {
-  if (!p) return {};
-  if (typeof p === "string") {
-    try { return JSON.parse(p); } catch { return {}; }
-  }
-  if (typeof p === "object") return p;
-  return {};
-}
-
-// Converte "500 mil", "500k", "1.2 mi" -> número (R$)
-function parseMoney(text?: string): number | undefined {
-  if (!text) return;
-  const t = text.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
-
-  // "1.2 mi", "1,2 mi", "1 mi", "1m"
-  let m = t.match(/(\d+(?:[\.,]\d+)?)\s*m[i]?\b/);
-  if (m) {
-    const n = Number(String(m[1]).replace(".", "").replace(",", "."));
-    return Math.round(n * 1_000_000);
-  }
-
-  // "500 mil" / "500mil"
-  m = t.match(/(\d+(?:[\.,]\d+)?)\s*mi[l]\b/);
-  if (m) {
-    const n = Number(String(m[1]).replace(".", "").replace(",", "."));
-    return Math.round(n * 1_000);
-  }
-
-  // "500k"
-  m = t.match(/(\d+(?:[\.,]\d+)?)\s*k\b/);
-  if (m) {
-    const n = Number(String(m[1]).replace(".", "").replace(",", "."));
-    return Math.round(n * 1_000);
-  }
-
-  // número com separador de milhar
-  m = t.match(/(\d{2,3}(?:[\.\s]\d{3})+|\d{4,})/);
-  if (m) {
-    const n = Number(String(m[1]).replace(/\D/g, ""));
-    return Number.isFinite(n) ? n : undefined;
-  }
-
-  return undefined;
-}
-
-// Tenta extrair "de X a Y", "entre X e Y", "a partir de X", "até Y"
-function parseRange(text?: string): { min?: number; max?: number } | undefined {
-  if (!text) return;
-  const t = text.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
-
-  // de 300 a 500 mil / entre 300 e 500 mil
-  const m = t.match(/(?:de|entre)\s+([^\s].*?)\s+(?:a|e|ate)\s+([^\s].*)/);
-  if (m) {
-    const n1 = parseMoney(m[1]);
-    const n2 = parseMoney(m[2]);
-    if (n1 && n2) {
-      return { min: Math.min(n1, n2), max: Math.max(n1, n2) };
-    }
-  }
-
-  // a partir de 300 mil
-  const mMin = t.match(/a\s+partir\s+de\s+([^\s].*)/);
-  if (mMin) {
-    const n = parseMoney(mMin[1]);
-    if (n) return { min: n };
-  }
-
-  // até 500 mil
-  if (/(?:ate|até)\s+/.test(t)) {
-    const n = parseMoney(t);
-    if (n) return { max: n };
-  }
-
-  return undefined;
-}
-
-// === Builder principal: usa o TEXTO ORIGINAL (com acentos) para Cidade/Bairro ===
-function buildVistaPesquisaFromText(text?: string) {
-  const out: any = { filter: {} as any };
-  if (!text) return out;
-
-  const orig = text; // mantém acentos para os valores enviados
-  const norm = text.normalize("NFD").replace(/\p{Diacritic}/gu, ""); // regex permissiva
-
-  // Dormitórios
-  const mDorm = norm.match(/(\d+)\s*(quarto|qts?|dormitorios?)/i);
-  if (mDorm) {
-    const q = Number(mDorm[1]);
-    if (q > 0) out.filter.Dormitorios = { min: q, max: q };
-  }
-
-  // Bairro (tenta no original; se falhar, usa normalizado)
-  const mBairroOrig = orig.match(/bairro\s+([\p{L}0-9\s\-]+)/iu);
-  if (mBairroOrig) out.filter.Bairro = [mBairroOrig[1].trim()];
-  else {
-    const mBairro = norm.match(/bairro\s+([A-Za-z0-9\s\-]+)/i);
-    if (mBairro) out.filter.Bairro = [mBairro[1].trim()];
-  }
-
-  // Cidade/UF no original: "São José/SC"
-  const mCidadeUF = orig.match(/([\p{L}\s\.]+)\/([A-Za-z]{2})/u);
-  if (mCidadeUF) {
-    const cidade = mCidadeUF[1].trim().replace(/\s{2,}/g, " ");
-    const uf = mCidadeUF[2].toUpperCase();
-    if (cidade) out.filter.Cidade = [cidade];
-    out.filter.UF = [uf]; // Vista usa UF (não "Estado")
-  }
-
-  // Preço → range (array de 2 números para o Vista)
-  const r = parseRange(orig);
-  if (r) {
-    if (typeof r.min === "number" && typeof r.max === "number") out.filter.ValorVenda = [r.min, r.max];
-    else if (typeof r.max === "number") out.filter.ValorVenda = [0, r.max];
-    else if (typeof r.min === "number") out.filter.ValorVenda = [r.min, 9_999_999_999];
-  }
-
-  return out;
-}
-
-// Normaliza paginação quando salva como {strategy,page_param,size_param}
-function normalizePaginationShape(pag: any): PaginationConfig | undefined {
-  if (!pag) return undefined;
-  if (pag.type) return pag as PaginationConfig;
-  if (pag.strategy) {
-    const typeMap: any = { page: "page", offset: "offset", cursor: "cursor", none: "none" };
-    return {
-      type: typeMap[pag.strategy] || "none",
-      param: pag.page_param || (pag.strategy === "offset" ? "offset" : "page"),
-      sizeParam: pag.size_param || (pag.strategy === "offset" ? "limit" : "pageSize")
-    };
-  }
-  return pag as PaginationConfig;
 }
 
 /** ===== Executor principal ===== */
@@ -330,39 +200,23 @@ export async function runSearch(
   const url = endpoint?.url;
   const timeout = (endpoint?.timeout_s || 30) * 1000;
 
+  // NENHUMA alteração: só respeita o que está configurado
   const defaults =
     method === "GET"
       ? endpoint?.default_query || endpoint?.defaults || {}
       : endpoint?.default_body || endpoint?.defaults || {};
 
+  // Monta params finais: defaults + params explícitos + filtros que vierem do chamador
   const plannedParams: Record<string, any> = {
     ...(defaults || {}),
     ...(params || {}),
     ...(filtros || {})
   };
 
+  // Aplica paginação (sem mudar nomes configurados)
   applyPagination(plannedParams, pagination, page, pageSize);
 
-  // ——— builder de filtros para Vista a partir do "text"
-  const isVista = typeof url === "string" && /vistahost\.com\.br/i.test(url);
-  if (isVista) {
-    // 1) preserva defaults mesmo quando 'pesquisa' veio como STRING
-    const currentPesquisa = tryParsePesquisa(plannedParams.pesquisa);
-
-    // 2) constrói filtros a partir do texto
-    const built = buildVistaPesquisaFromText(text);
-
-    // 3) merge só em 'filter' (não mexe em 'fields', 'order', etc.)
-    plannedParams.pesquisa = {
-      ...currentPesquisa,
-      filter: {
-        ...(currentPesquisa?.filter || {}),
-        ...(built.filter || {})
-      }
-    };
-  }
-
-  // Stringifica a pesquisa (objeto) para query/body
+  // Se 'pesquisa' for objeto, stringifica; se já for string, NÃO mexe
   if (
     Object.prototype.hasOwnProperty.call(plannedParams, "pesquisa") &&
     typeof plannedParams.pesquisa === "object"
