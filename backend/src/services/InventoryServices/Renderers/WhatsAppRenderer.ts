@@ -3,10 +3,17 @@
 // Prioriza campos universais e alias comuns (ex.: dorm/dormitórios, cidade/cidade, uf/estado, etc).
 // OBS: WhatsApp não suporta [texto](url); use a URL "crua" para ser clicável.
 
-type RenderOpts = {
-  maxItems?: number;           // quantos itens mostrar (default 5)
-  headerTitle?: string;        // sobrescrever título do topo
-  showIndexEmojis?: boolean;   // 1️⃣ 2️⃣ 3️⃣ ...
+// ⬇️ ADICIONE/ATUALIZE ESTE TIPO
+export type RenderOpts = {
+  headerTitle?: string;
+  /** Resumo amigável do que foi buscado, ex.: "em apartamento, campinas, são josé, sc" */
+  criteriaSummary?: string;
+  /** Dica de categoria para CTA (ex.: "Imóveis", "Veículos", "Saúde" ...) */
+  categoryHint?: string;
+  /** Máximo de cards a exibir (1..5) */
+  maxItems?: number;
+  /** Mostra emojis 1️⃣ 2️⃣ 3️⃣ como prefixo dos cards */
+  showIndexEmojis?: boolean;
 };
 
 function normalize(s?: string) {
@@ -36,7 +43,35 @@ function getFieldLoose(obj: any, aliases: string[]) {
 
 function toNumber(v: any): number | undefined {
   if (v === null || v === undefined) return undefined;
-  const s = String(v).replace(/[^\d.,\-]/g, "").replace(/\./g, "").replace(",", ".");
+  if (typeof v === "number") return isNaN(v) ? undefined : v;
+
+  let s = String(v).trim();
+  if (!s) return undefined;
+
+  // Mantém apenas dígitos, vírgula e ponto (e sinal)
+  s = s.replace(/[^\d.,\-]/g, "");
+
+  const hasComma = s.includes(",");
+  const hasDot = s.includes(".");
+
+  if (hasComma && hasDot) {
+    // Quando tem os dois, o ÚLTIMO separador costuma ser o decimal
+    const lastComma = s.lastIndexOf(",");
+    const lastDot = s.lastIndexOf(".");
+    const decimalSep = lastComma > lastDot ? "," : ".";
+    const thousandSep = decimalSep === "," ? "." : ",";
+
+    s = s.split(thousandSep).join("");   // remove separador de milhar
+    s = s.replace(decimalSep, ".");      // normaliza decimal para ponto
+  } else if (hasComma) {
+    // Só vírgula → vírgula é decimal no padrão BR
+    s = s.replace(/\./g, "");            // se tiver ponto, assume milhar
+    s = s.replace(",", ".");
+  } else if (hasDot) {
+    // Só ponto → assume ponto como decimal (formato US)
+    // (se houver vírgulas perdidas de milhar, já foram removidas acima)
+  }
+
   const n = Number(s);
   return isNaN(n) ? undefined : n;
 }
@@ -53,9 +88,44 @@ function fmtMoneyBR(v: any): string {
 function fmtAreaM2(v: any): string | undefined {
   const n = toNumber(v);
   if (n == null) return undefined;
-  // evita .00
-  const s = Number(n.toFixed(2));
-  return `${s} m²`;
+
+  // Se tiver casas decimais, mostra 2; se for inteiro, mostra sem casas
+  const hasDecimals = Math.abs(n % 1) > 1e-6;
+  const txt = n.toLocaleString("pt-BR", {
+    minimumFractionDigits: hasDecimals ? 2 : 0,
+    maximumFractionDigits: hasDecimals ? 2 : 0
+  });
+  return `${txt} m²`;
+}
+
+function appendCTA(categoryHint?: string): string {
+  switch ((categoryHint || "").toLowerCase()) {
+    case "imóveis":
+    case "imoveis":
+      return "\n\n👉 Gostaria que eu agendasse uma visita em algum desses?";
+
+    case "veículos":
+    case "automóveis":
+    case "autos":
+      return "\n\n👉 Quer que eu agende um test drive para você?";
+
+    case "saúde":
+    case "consultas":
+      return "\n\n👉 Gostaria que eu agendasse a consulta para você?";
+
+    case "educação":
+    case "cursos":
+      return "\n\n👉 Deseja que eu reserve uma vaga neste curso?";
+
+    case "eventos":
+      return "\n\n👉 Quer que eu garanta seus ingressos agora?";
+
+    case "serviços":
+      return "\n\n👉 Deseja que eu agende este serviço para você?";
+
+    default:
+      return "\n\n👉 Posso ajudar a avançar com um próximo passo?";
+  }
 }
 
 function icoIndex(i: number) {
@@ -215,26 +285,36 @@ function renderCard(item: any, domain: ReturnType<typeof detectDomain>) {
 }
 
 // =============== PÚBLICO ===============
-export function renderWhatsAppList(
-  items: any[],
-  opts: RenderOpts & { criteriaSummary?: string; categoryHint?: string } = {}
-): string {
-  const maxItems = Math.max(1, opts.maxItems ?? 5);
-  const shown = (items || []).slice(0, maxItems);
+export function renderWhatsAppList(items: any[], opts: RenderOpts = {}): string {
+  const max = Math.min(Math.max(opts.maxItems ?? 5, 1), 5);
+  const total = Array.isArray(items) ? items.length : 0;
+  const shown = (items || []).slice(0, max);
 
-  if (!shown.length) return "❌ Não encontrei opções com esses critérios. Quer tentar ajustar a busca?";
-
+  // Cabeçalho
   const head = opts.headerTitle
     ?? (opts.criteriaSummary
         ? `🌟 Encontrei algumas opções ${opts.criteriaSummary}:`
         : `🌟 Encontrei algumas opções que podem te interessar:`);
 
+  // Se NÃO houver itens, devolve somente o "não encontrei" (sem CTA)
+  if (!total || shown.length === 0) {
+    const crit = (opts.criteriaSummary || "").trim();
+    const notFound = crit
+      ? `Não encontrei opções ${crit} no momento.`
+      : `Não encontrei opções no momento.`;
+    return notFound;
+  }
+
+  // Corpo da mensagem (cards)
   const body = shown.map((it, idx) => {
     const domain = detectDomain(it, opts.categoryHint);
     const card = renderCard(it, domain);
-    const prefix = (opts.showIndexEmojis ?? true) ? `${icoIndex(idx+1)} ` : "";
+    const prefix = (opts.showIndexEmojis ?? true) ? `${icoIndex(idx + 1)} ` : "";
     return `${prefix}${card}`;
   }).join("\n\n");
 
-  return `${head}\n\n${body}`;
+  // CTA só quando há itens
+  const cta = appendCTA(opts.categoryHint);
+
+  return `${head}\n\n${body}${cta}`;
 }
