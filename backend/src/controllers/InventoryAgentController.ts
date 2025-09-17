@@ -1,92 +1,142 @@
 import { Request, Response } from "express";
-import InventoryIntegration from "../models/InventoryIntegration";
-import { buildParamsForApi } from "../services/InventoryServices/PlannerService";
-import { runSearch, RunSearchOutput } from "../services/InventoryServices/RunSearchService";
 import { logger } from "../utils/logger";
-import { Op } from "sequelize";
+import InventoryIntegration from "../models/InventoryIntegration";
+import { runSearch, RunSearchOutput } from "../services/InventoryServices/RunSearchService";
+import { chooseIntegrationByText } from "../services/InventoryServices/CategoryRouter";
+import { parseCriteriaFromText, filterAndRankItems, paginateRanked } from "../services/InventoryServices/NLFilter";
 
-function guessCategoryHint(text: string): string | null {
-  const t = (text || "").toLowerCase();
-  if (/(im[óo]vel|ap(e|ê)|apartamento|kitnet|studio|terreno|casa|condom[ií]nio)/.test(t)) return "imóveis";
-  if (/(carro|carros|ve[ií]culo|veiculo|moto|suv|sed[aã]n|hatch)/.test(t)) return "veículos";
-  if (/(agenda|agendar|consult(a|ório)|m[eé]dico|hor[aá]rio|disponibilidade|booking|appointment)/.test(t)) return "agenda";
-  if (/(produto|estoque|sku|loja|pre[çc]o|dispon[ií]vel|marketplace)/.test(t)) return "estoque";
-  return null;
+function resolveCompanyId(req: Request, bodyCompanyId?: number) {
+  return (req as any)?.user?.companyId ?? bodyCompanyId;
 }
 
-async function pickIntegrationByIntent(companyId: number, text: string) {
-  const cat = guessCategoryHint(text || "");
-  if (cat) {
-    const byCat = await InventoryIntegration.findOne({
-      where: { companyId, categoryHint: { [Op.iLike]: `%${cat}%` } },
-      order: [["id", "ASC"]]
-    });
-    if (byCat) return byCat;
-  }
-  const terms = (text || "").toLowerCase().split(/[^a-z0-9á-úç]+/i).filter(Boolean).slice(0, 3);
-  if (terms.length) {
-    const ors = terms.map(w => ({ name: { [Op.iLike]: `%${w}%` } }));
-    const byName = await InventoryIntegration.findOne({
-      where: { companyId, [Op.or]: ors },
-      order: [["id", "ASC"]]
-    });
-    if (byName) return byName;
-  }
-  return InventoryIntegration.findOne({ where: { companyId }, order: [["id", "ASC"]] });
-}
-
-/** POST /inventory/agent/lookup */
+/** ========= Antigo: /inventory/agent/lookup (mantido) ========= */
 export const agentLookup = async (req: Request, res: Response) => {
-  const start = Date.now();
+  const t0 = Date.now();
   try {
     const {
+      companyId: companyIdFromBody,
       integrationId,
       text = "",
       filtros = {},
       page = 1,
-      pageSize = 10,
-      companyId: companyIdFromBody
+      pageSize = 5
     } = (req.body || {}) as any;
 
-    const companyId = (req as any)?.user?.companyId ?? companyIdFromBody;
-
-    if (!companyId) return res.status(400).json({ error: "CompanyIdMissing" });
-
-    let integ: InventoryIntegration | null = null;
-
-    if (integrationId) {
-      integ = await InventoryIntegration.findOne({ where: { id: integrationId, companyId } });
-      if (!integ) return res.status(404).json({ error: "IntegrationNotFound" });
-    } else {
-      integ = await pickIntegrationByIntent(companyId, text);
-      if (!integ) return res.status(404).json({ error: "NoIntegrationForCompany" });
+    const companyId = resolveCompanyId(req, companyIdFromBody);
+    if (!companyId || !integrationId) {
+      return res.status(400).json({ error: "MissingParams", message: "companyId/integrationId required" });
     }
+    const integ = await InventoryIntegration.findOne({ where: { id: integrationId, companyId } });
+    if (!integ) return res.status(404).json({ error: "IntegrationNotFound" });
 
-    const planned = buildParamsForApi({ text, filtros, paginacao: { page, pageSize } }, (integ as any).pagination);
-    const params = (planned && (planned as any).params) || {};
+    const out: RunSearchOutput = await runSearch(integ as any, {
+      params: {},
+      page: 1,
+      pageSize: 50, // traz um lote maior e filtramos localmente
+      text,
+      filtros
+    });
 
-    const t0 = Date.now();
-    const out: RunSearchOutput = await runSearch(integ as any, { params, page, pageSize, text, filtros });
-    const took = Date.now() - t0;
+    // Filtro LOCAL
+    const criteria = parseCriteriaFromText(text);
+    const ranked = filterAndRankItems(out.items || [], criteria);
+    const items = paginateRanked(ranked, page, pageSize);
 
     logger.info(
-      { ctx: "AgentLookup", integrationId: integ.get("id"), tookMs: took, total: out?.total ?? out?.items?.length ?? 0 },
-      "runSearch done"
+      { ctx: "AgentLookup", integrationId, tookMs: Date.now() - t0, total: ranked.length },
+      "lookup finished"
     );
-
-    const totalMs = Date.now() - start;
-    logger.info({ ctx: "AgentLookup", totalMs }, "lookup finished");
 
     return res.json({
       companyId,
-      integrationId: integ.get("id"),
-      integrationName: integ.get("name"),
-      categoryHint: integ.get("categoryHint") || null,
-      query: { text, filtros, page, pageSize },
-      ...out
+      integrationId: Number(integ.get("id")),
+      integrationName: integ.get("name") || "integration",
+      categoryHint: integ.get("categoryHint"),
+      query: { text, filtros, page, pageSize, criteria },
+      items,
+      total: ranked.length,
+      page,
+      pageSize,
+      raw: out.raw
     });
   } catch (err: any) {
     logger.error({ ctx: "AgentLookup", err }, "lookup error");
     return res.status(500).json({ error: "AgentLookupFailed", message: err?.message });
+  }
+};
+
+/** ========= Novo: /inventory/agent/auto (decide integração + filtra local) ========= */
+export const agentAuto = async (req: Request, res: Response) => {
+  const t0 = Date.now();
+  try {
+    const {
+      companyId: companyIdFromBody,
+      text = "",
+      page = 1,
+      pageSize = 5
+    } = (req.body || {}) as any;
+
+    const companyId = resolveCompanyId(req, companyIdFromBody);
+    if (!companyId) return res.status(400).json({ error: "CompanyIdMissing" });
+    if (!text || !String(text).trim()) {
+      return res.status(400).json({ error: "TextMissing", message: "text required" });
+    }
+
+    // 1) escolhe a integração pela Dica de Categoria
+    const integ = await chooseIntegrationByText(companyId, text);
+    if (!integ) {
+      return res.json({
+        companyId,
+        matched: false,
+        reason: "NoIntegrationMatched",
+        items: [],
+        total: 0,
+        page,
+        pageSize
+      });
+    }
+
+    // 2) chama o provedor (sem mexer em 'pesquisa')
+    const out: RunSearchOutput = await runSearch(integ as any, {
+      params: {},
+      page: 1,
+      pageSize: 50, // lote para filtrar
+      text,
+      filtros: {}
+    });
+
+    // 3) filtra localmente e pagina
+    const criteria = parseCriteriaFromText(text);
+    const ranked = filterAndRankItems(out.items || [], criteria);
+    const items = paginateRanked(ranked, page, pageSize);
+
+    logger.info(
+      {
+        ctx: "AgentAuto",
+        integrationId: Number(integ.get("id")),
+        tookMs: Date.now() - t0,
+        criteria,
+        before: Array.isArray(out.items) ? out.items.length : 0,
+        after: ranked.length
+      },
+      "auto finished"
+    );
+
+    return res.json({
+      companyId,
+      matched: true,
+      integrationId: Number(integ.get("id")),
+      integrationName: integ.get("name") || "integration",
+      categoryHint: integ.get("categoryHint"),
+      criteria,
+      items,
+      total: ranked.length,
+      page,
+      pageSize,
+      raw: out.raw
+    });
+  } catch (err: any) {
+    logger.error({ ctx: "AgentAuto", err }, "auto error");
+    return res.status(500).json({ error: "AgentAutoFailed", message: err?.message });
   }
 };
