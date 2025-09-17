@@ -9,7 +9,9 @@ function resolveCompanyId(req: Request, bodyCompanyId?: number) {
   return (req as any)?.user?.companyId ?? bodyCompanyId;
 }
 
-// Converte critérios semânticos em filtros "genéricos". O RunSearchService pode traduzi-los via filterMap por integração.
+/** Converte critérios semânticos em filtros genéricos.
+ *  Se o provider suportar mapeamento (via filterMap), o RunSearchService traduz.
+ */
 function buildProviderFiltersFromCriteria(criteria: ReturnType<typeof parseCriteriaFromText>) {
   const f: Record<string, any> = {};
 
@@ -56,6 +58,25 @@ function buildProviderFiltersFromCriteria(criteria: ReturnType<typeof parseCrite
   return f;
 }
 
+/** Decide de onde vêm os itens do provider (cada integração pode variar). */
+function pickProviderItems(out: RunSearchOutput): any[] {
+  // 1) Padrão do nosso pipeline
+  const cand1 = (out as any)?.items;
+  if (Array.isArray(cand1) && cand1.length) return cand1;
+
+  // 2) Muitos providers retornam em raw.data ou raw.items
+  const raw = (out as any)?.raw || {};
+  if (Array.isArray(raw.data)) return raw.data;
+  if (Array.isArray(raw.items)) return raw.items;
+
+  // 3) Alguns retornam diretamente { data: [...] }
+  const cand2 = (out as any)?.data;
+  if (Array.isArray(cand2)) return cand2;
+
+  // Nada
+  return [];
+}
+
 /** ========= Antigo: /inventory/agent/lookup ========= */
 export const agentLookup = async (req: Request, res: Response) => {
   const t0 = Date.now();
@@ -93,11 +114,22 @@ export const agentLookup = async (req: Request, res: Response) => {
       filtros
     });
 
-    const ranked = filterAndRankItems(out.items || [], criteria);
+    // >>> pega do lugar certo (items | raw.data | raw.items | data)
+    const providerItems = pickProviderItems(out);
+
+    // Filtro LOCAL (hard + rank)
+    const ranked = filterAndRankItems(providerItems, criteria);
     const items = paginateRanked(ranked, page, pageSize);
 
     logger.info(
-      { corrId, ctx: "AgentLookup", integrationId: Number(integ.get("id")), tookMs: Date.now() - t0, returned: items.length, total: ranked.length },
+      {
+        corrId,
+        ctx: "AgentLookup",
+        integrationId: Number(integ.get("id")),
+        tookMs: Date.now() - t0,
+        before: Array.isArray(providerItems) ? providerItems.length : 0,
+        after: ranked.length
+      },
       "agent_lookup_out"
     );
 
@@ -141,7 +173,7 @@ export const agentAuto = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "TextMissing", message: "text required" });
     }
 
-    // 1) escolhe a integração pelo texto (categoryHint/domain router)
+    // 1) escolhe a integração pelo texto (router por categoria)
     const integ = await chooseIntegrationByText(companyId, text);
     if (!integ) {
       logger.info({ corrId, ctx: "AgentAuto", step: "no_match" }, "agent_auto_no_match");
@@ -160,7 +192,7 @@ export const agentAuto = async (req: Request, res: Response) => {
     const filtrosFromCriteria = buildProviderFiltersFromCriteria(criteria);
     const filtros = { ...filtrosFromCriteria, ...filtrosBody };
 
-    // 3) busca lote amplo e aplica filtro local (hard + rank)
+    // 3) busca lote amplo e aplica filtro local
     const out: RunSearchOutput = await runSearch(integ as any, {
       params: {},
       page: 1,
@@ -169,12 +201,23 @@ export const agentAuto = async (req: Request, res: Response) => {
       filtros
     });
 
-    const ranked = filterAndRankItems(out.items || [], criteria);
+    // >>> pega do lugar certo (items | raw.data | raw.items | data)
+    const providerItems = pickProviderItems(out);
+
+    // 4) filtra localmente e pagina
+    const ranked = filterAndRankItems(providerItems, criteria);
     const items = paginateRanked(ranked, page, pageSize);
 
     logger.info(
-      { corrId, ctx: "AgentAuto", step: "out", integrationId: Number(integ.get("id")), tookMs: Date.now() - t0,
-        before: Array.isArray(out.items) ? out.items.length : 0, after: ranked.length },
+      {
+        corrId,
+        ctx: "AgentAuto",
+        step: "out",
+        integrationId: Number(integ.get("id")),
+        tookMs: Date.now() - t0,
+        before: Array.isArray(providerItems) ? providerItems.length : 0,
+        after: ranked.length
+      },
       "agent_auto_out"
     );
 
