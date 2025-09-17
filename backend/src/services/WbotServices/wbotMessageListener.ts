@@ -733,41 +733,66 @@ const pick = (obj: any, keys: string[]) => keys.find(k => obj?.[k] != null && ob
 const formatInventoryReply = (payload: any) => {
   const items: any[] = payload?.items || [];
   const page = payload?.page || 1;
-  const pageSize = payload?.pageSize || items.length || 0;
+  const pageSize = payload?.pageSize || Math.min(items.length, 5) || 0;
   const total = payload?.total ?? items.length ?? 0;
 
+  // tenta compor um "contexto" de localização pro cabeçalho
+  const crit = payload?.criteria || payload?.query?.criteria || {};
+  const filtros = payload?.query?.filtros || {};
+  const neighborhood = crit.neighborhood || filtros.neighborhood;
+  const city = crit.city || filtros.city;
+  const state = crit.state || filtros.state;
+
+  const whereBits = [neighborhood, city, state].filter(Boolean).join(", ");
+  const where = whereBits ? ` em ${whereBits}` : "";
+
   const head = total > 0
-    ? `Encontrei ${total} opção(ões). Aqui vão as ${Math.min(pageSize, items.length)} primeiras:\n`
+    ? `🌟 Encontrei algumas opções${where}:\n`
     : "Não encontrei itens para esse critério.";
 
-  const lines = items.map((it, idx) => {
-    const titleKey = pick(it, ["TituloSite", "Titulo", "Nome", "Descricao", "Descrição"]) || "Codigo";
-    const title = it[titleKey] || it["Codigo"] || it["codigo"] || `item ${idx+1}`;
+  const top = items.slice(0, Math.min(pageSize || 5, 5));
 
+  const lines = top.map((it, idx) => {
+    const pick = (obj: any, keys: string[]) =>
+      keys.find(k => obj?.[k] != null && obj?.[k] !== "" && obj?.[k] !== "0");
+
+    const titleKey = pick(it, ["TituloSite", "Titulo", "title", "Nome", "Descricao", "Descrição"]) || "Codigo";
+    const title = it[titleKey] || it["Codigo"] || it["codigo"] || `Item ${idx + 1}`;
+
+    // localização
     const bairro = it["Bairro"] || it["bairro"];
     const cidade = it["Cidade"] || it["cidade"];
-    const uf = it["UF"] || it["Estado"] || it["estado"] || it["uf"];
-    const quartos = it["Dormitorios"] || it["Quartos"] || it["dormitorios"] || it["quartos"];
-    const vagas = it["Vagas"] || it["EstacionamentoVagas"] || it["vagas"];
-    const area = it["AreaPrivativa"] || it["AreaTotal"] || it["area"] || it["metragem"];
-    const preco = it["ValorVenda"] || it["Preco"] || it["Valor"] || it["preco"];
+    const uf     = it["UF"] || it["uf"] || it["Estado"] || it["estado"];
 
-    const parts = [
-      `• ${title}`,
-      bairro || cidade || uf ? ` – ${[bairro, cidade, uf].filter(Boolean).join(", ")}` : "",
-      quartos ? ` | ${quartos} qts` : "",
-      vagas ? ` | ${vagas} vg` : "",
-      area ? ` | ${area} m²` : "",
-      preco ? ` | R$ ${String(preco).replace(/\B(?=(\d{3})+(?!\d))/g, ".")}` : ""
-    ];
-    return parts.join("");
+    // atributos comuns
+    const dorm   = it["dormitorios"] || it["Dormitorios"] || it["Quartos"] || it["quartos"];
+    const vagas  = it["vagas"] || it["Vagas"];
+    const area   = it["area"] || it["Area"] || it["Área"] || it["AreaPrivativa"];
+    const price  = it["price"] || it["Preco"] || it["Preço"] || it["ValorVenda"] || it["valor"];
+
+    // link/slug
+    const url = it["url"] || it["URL"] || it["link"] || it["Link"] || it["slug"];
+
+    const idxEmoji = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣"][idx] || `${idx + 1}.`;
+    const loc = [bairro, cidade, uf].filter(Boolean).join(", ");
+
+    const specBits: string[] = [];
+    if (dorm) specBits.push(`🛏 ${dorm} dormitório(s)`);
+    if (vagas) specBits.push(`🚗 ${vagas} vaga(s)`);
+    if (area) specBits.push(`📐 ${area} m²`);
+
+    const priceStr = price ? `\n💰 ${String(price).replace(/[^\d.,]/g, "")}` : "";
+
+    const linkStr = url ? `\n🔗 Ver detalhes ➜ ${url}` : "";
+
+    return `${idxEmoji} *${title}*${loc ? ` – ${loc}` : ""}\n${specBits.join(" | ")}${priceStr}${linkStr}`;
   });
 
-  const footer = total > page*pageSize
-    ? `\n\nQuer ver mais opções? Me diga "ver mais" que eu trago a próxima página.`
+  const footer = total > page * pageSize
+    ? `\n👉 *Diga "ver mais"* para ver a próxima página.`
     : "";
 
-  return `${head}\n${lines.join("\n")}${footer}`.trim();
+  return `${head}\n${lines.join("\n\n")}${footer}`.trim();
 };
 
 const handleOpenAi = async (
@@ -891,13 +916,14 @@ const handleOpenAi = async (
       await cacheLayer.set(invKey(ticket), JSON.stringify(newState), "EX", 60 * 30); // 30min
 
       // ajusta rodapé de "ver mais" com base em total x página
-      const reply = formatInventoryReply({
-        ...auto,
-        page,
-        pageSize
-      });
+      // usa o previewMessage do backend se vier; senão, cai no fallback local
+      const reply =
+        (auto && typeof auto.previewMessage === "string" && auto.previewMessage.trim())
+          ? auto.previewMessage
+          : formatInventoryReply({ ...auto, page, pageSize });
 
       const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, { text: reply });
+
       await verifyMessage(sentMessage!, ticket, contact);
       return; // não chama LLM
     }
