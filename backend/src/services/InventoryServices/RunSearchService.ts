@@ -173,6 +173,88 @@ function applyPagination(
   }
 }
 
+/* =======================
+   Builders de filtros (Vista)
+   ======================= */
+
+// Converte "500 mil", "500k", "1.2 mi" -> número (R$)
+function parseMoney(text?: string): number | undefined {
+  if (!text) return;
+  const t = text.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+
+  // "1.2 mi", "1,2 mi", "1 mi", "1m"
+  let m = t.match(/(\d+(?:[\.,]\d+)?)\s*m[i]?\b/);
+  if (m) {
+    const n = Number(String(m[1]).replace(".", "").replace(",", "."));
+    return Math.round(n * 1_000_000);
+  }
+
+  // "500 mil" / "500mil"
+  m = t.match(/(\d+(?:[\.,]\d+)?)\s*mi[l]\b/);
+  if (m) {
+    const n = Number(String(m[1]).replace(".", "").replace(",", "."));
+    return Math.round(n * 1_000);
+  }
+
+  // "500k"
+  m = t.match(/(\d+(?:[\.,]\d+)?)\s*k\b/);
+  if (m) {
+    const n = Number(String(m[1]).replace(".", "").replace(",", "."));
+    return Math.round(n * 1_000);
+  }
+
+  // número com separador de milhar
+  m = t.match(/(\d{2,3}(?:[\.\s]\d{3})+|\d{4,})/);
+  if (m) {
+    const n = Number(String(m[1]).replace(/\D/g, ""));
+    return Number.isFinite(n) ? n : undefined;
+  }
+
+  return undefined;
+}
+
+// Cria { pesquisa.filter } a partir do texto livre
+function buildVistaPesquisaFromText(text?: string) {
+  const out: any = { filter: {} as any };
+  if (!text) return out;
+
+  const t = text.normalize("NFD").replace(/\p{Diacritic}/gu, ""); // remove acentos
+
+  // Dormitórios: "2 quartos", "2 qts", "2 dormitorios"
+  const mDorm = t.match(/(\d+)\s*(quarto|qts?|dormitorios?)/i);
+  if (mDorm) {
+    const q = Number(mDorm[1]);
+    if (q > 0) out.filter.Dormitorios = { min: q, max: q };
+  }
+
+  // Bairro: "bairro Campinas"
+  const mBairro = t.match(/bairro\s+([A-Za-z0-9\s\-]+)/i);
+  if (mBairro) {
+    const bairro = mBairro[1].trim().replace(/\s{2,}/g, " ");
+    if (bairro) out.filter.Bairro = [bairro];
+  }
+
+  // Cidade/UF: "São José/SC"
+  const mCidadeUF = t.match(/([A-Za-z\s\.]+)\/([A-Za-z]{2})/);
+  if (mCidadeUF) {
+    const cidade = mCidadeUF[1].trim().replace(/\s{2,}/g, " ");
+    const uf = mCidadeUF[2].toUpperCase();
+    if (cidade) out.filter.Cidade = [cidade];
+    out.filter.Estado = [uf];
+  }
+
+  // Preço máximo: "até 500 mil", "ate 500k", "até 600.000"
+  const hasAte = /(?:ate|até)\s+/i.test(t);
+  if (hasAte) {
+    const val = parseMoney(t);
+    if (val) {
+      out.filter.ValorVenda = { ...(out.filter.ValorVenda || {}), max: val };
+    }
+  }
+
+  return out;
+}
+
 /** ===== Executor principal ===== */
 export async function runSearch(
   integration: IntegrationLike,
@@ -183,7 +265,7 @@ export async function runSearch(
   const endpoint: EndpointConfig = (integration as any).get("endpoint");
   const auth: AuthConfig = (integration as any).get("auth");
   const pagination: PaginationConfig = (integration as any).get("pagination");
-  const rolemap: Record<string, string> | undefined = (integration as any).get("rolemap");
+  const rolemap: any = (integration as any).get("rolemap");
   const schema: { itemsPath?: string; totalPath?: string } | undefined = (integration as any).get("schema");
 
   const method = (endpoint?.method || "GET").toUpperCase();
@@ -203,6 +285,29 @@ export async function runSearch(
 
   applyPagination(plannedParams, pagination, page, pageSize);
 
+  // ——— builder de filtros para Vista a partir do "text"
+  const isVista = typeof url === "string" && /vistahost\.com\.br/i.test(url);
+  if (isVista) {
+    const currentPesquisa =
+      (plannedParams.pesquisa && typeof plannedParams.pesquisa === "object")
+        ? plannedParams.pesquisa
+        : {};
+
+    const built = buildVistaPesquisaFromText(text);
+
+    // mescla preservando o que o default_query já tiver
+    const mergedFilter = {
+      ...(currentPesquisa.filter || {}),
+      ...(built.filter || {})
+    };
+
+    plannedParams.pesquisa = {
+      ...(currentPesquisa || {}),
+      filter: mergedFilter
+    };
+  }
+
+  // Stringifica a pesquisa (objeto) para query/body
   if (
     Object.prototype.hasOwnProperty.call(plannedParams, "pesquisa") &&
     typeof plannedParams.pesquisa === "object"
@@ -219,7 +324,7 @@ export async function runSearch(
       hasDefaults:
         !!endpoint?.default_query || !!endpoint?.default_body || !!endpoint?.defaults,
       hasAuth: !!auth && (auth as any).type !== "none",
-      paginationType: pagination?.type || "none",
+      paginationType: (pagination as any)?.type || "none",
       page,
       pageSize,
       plannedParams
