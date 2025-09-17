@@ -68,6 +68,7 @@ import { WebhookModel } from "../../models/Webhook";
 
 import {differenceInMilliseconds} from "date-fns";
 import Whatsapp from "../../models/Whatsapp";
+import axios from "axios";
 
 type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
 
@@ -650,7 +651,48 @@ export const keepOnlySpecifiedChars = (str: string) => {
   return str.replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚâêîôûÂÊÎÔÛãõÃÕçÇ!?.,;:\s]/g, "");
 };
 
+// ==== Helpers de inventário (formatação de itens) ====
+const pick = (obj: any, keys: string[]) => keys.find(k => obj?.[k] != null && obj?.[k] !== "" && obj?.[k] !== "0");
 
+const formatInventoryReply = (payload: any) => {
+  const items: any[] = payload?.items || [];
+  const page = payload?.page || 1;
+  const pageSize = payload?.pageSize || items.length || 0;
+  const total = payload?.total ?? items.length ?? 0;
+
+  const head = total > 0
+    ? `Encontrei ${total} opção(ões). Aqui vão as ${Math.min(pageSize, items.length)} primeiras:\n`
+    : "Não encontrei itens para esse critério.";
+
+  const lines = items.map((it, idx) => {
+    const titleKey = pick(it, ["TituloSite", "Titulo", "Nome", "Descricao", "Descrição"]) || "Codigo";
+    const title = it[titleKey] || it["Codigo"] || it["codigo"] || `item ${idx+1}`;
+
+    const bairro = it["Bairro"] || it["bairro"];
+    const cidade = it["Cidade"] || it["cidade"];
+    const uf = it["UF"] || it["Estado"] || it["estado"] || it["uf"];
+    const quartos = it["Dormitorios"] || it["Quartos"] || it["dormitorios"] || it["quartos"];
+    const vagas = it["Vagas"] || it["EstacionamentoVagas"] || it["vagas"];
+    const area = it["AreaPrivativa"] || it["AreaTotal"] || it["area"] || it["metragem"];
+    const preco = it["ValorVenda"] || it["Preco"] || it["Valor"] || it["preco"];
+
+    const parts = [
+      `• ${title}`,
+      bairro || cidade || uf ? ` – ${[bairro, cidade, uf].filter(Boolean).join(", ")}` : "",
+      quartos ? ` | ${quartos} qts` : "",
+      vagas ? ` | ${vagas} vg` : "",
+      area ? ` | ${area} m²` : "",
+      preco ? ` | R$ ${String(preco).replace(/\B(?=(\d{3})+(?!\d))/g, ".")}` : ""
+    ];
+    return parts.join("");
+  });
+
+  const footer = total > page*pageSize
+    ? `\n\nQuer ver mais opções? Me diga "ver mais" que eu trago a próxima página.`
+    : "";
+
+  return `${head}\n${lines.join("\n")}${footer}`.trim();
+};
 
 const handleOpenAi = async (
   msg: proto.IWebMessageInfo,
@@ -669,6 +711,9 @@ const handleOpenAi = async (
 
   const bodyMessage = getBodyMessage(msg);
 
+  // paginação "ver mais"
+  const wantMore = /\b(ver mais|mais opções|próxima página)\b/i.test(bodyMessage || "");
+
   if (!bodyMessage) return;
 
   let { prompt } = await ShowWhatsAppService(wbot.id, ticket.companyId);
@@ -683,6 +728,55 @@ const handleOpenAi = async (
   if (!prompt) return;
 
   if (msg.messageStubType) return;
+
+  // ============ INVENTORY AUTO antes do LLM ============
+  try {
+    const base = (process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "");
+    const t0 = Date.now();
+    logger.info(
+      {
+        ctx: "InventoryAuto",
+        step: "request",
+        companyId: ticket.companyId,
+        text: bodyMessage
+      },
+      "calling /inventory/agent/auto"
+    );
+
+    const { data: auto } = await axios.post(`${base}/inventory/agent/auto`, {
+      companyId: ticket.companyId,
+      text: bodyMessage,
+      page: 1,
+      pageSize: 5
+    });
+
+    logger.info(
+      {
+        ctx: "InventoryAuto",
+        step: "response",
+        tookMs: Date.now() - t0,
+        matched: !!auto?.matched,
+        total: auto?.total ?? (auto?.items?.length || 0)
+      },
+      "auto finished"
+    );
+
+    if (auto?.matched && (auto?.items?.length || 0) > 0) {
+      const reply = formatInventoryReply(auto);
+      const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
+        text: reply
+      });
+      await verifyMessage(sentMessage!, ticket, contact);
+      // se encontrou itens, NÃO chama LLM agora
+      return;
+    }
+  } catch (err: any) {
+    logger.error(
+      { ctx: "InventoryAuto", step: "error", error: err?.message },
+      "auto call failed (will fallback to LLM)"
+    );
+  }
+  // =====================================================
 
   const publicFolder: string = path.resolve(
     __dirname,
