@@ -4,6 +4,7 @@ import InventoryIntegration from "../models/InventoryIntegration";
 import { runSearch, RunSearchOutput } from "../services/InventoryServices/RunSearchService";
 import { chooseIntegrationByText } from "../services/InventoryServices/CategoryRouter";
 import { parseCriteriaFromText, filterAndRankItems, paginateRanked } from "../services/InventoryServices/NLFilter";
+import { renderWhatsAppList } from "../services/InventoryServices/Renderers/WhatsAppRenderer";
 
 function resolveCompanyId(req: Request, bodyCompanyId?: number) {
   return (req as any)?.user?.companyId ?? bodyCompanyId;
@@ -60,20 +61,16 @@ function buildProviderFiltersFromCriteria(criteria: ReturnType<typeof parseCrite
 
 /** Decide de onde vêm os itens do provider (cada integração pode variar). */
 function pickProviderItems(out: RunSearchOutput): any[] {
-  // 1) Padrão do nosso pipeline
   const cand1 = (out as any)?.items;
   if (Array.isArray(cand1) && cand1.length) return cand1;
 
-  // 2) Muitos providers retornam em raw.data ou raw.items
   const raw = (out as any)?.raw || {};
   if (Array.isArray(raw.data)) return raw.data;
   if (Array.isArray(raw.items)) return raw.items;
 
-  // 3) Alguns retornam diretamente { data: [...] }
   const cand2 = (out as any)?.data;
   if (Array.isArray(cand2)) return cand2;
 
-  // Nada
   return [];
 }
 
@@ -114,12 +111,24 @@ export const agentLookup = async (req: Request, res: Response) => {
       filtros
     });
 
-    // >>> pega do lugar certo (items | raw.data | raw.items | data)
     const providerItems = pickProviderItems(out);
 
     // Filtro LOCAL (hard + rank)
     const ranked = filterAndRankItems(providerItems, criteria);
     const items = paginateRanked(ranked, page, pageSize);
+
+    // mensagem bonita p/ WhatsApp
+    const criteriaSummaryParts: string[] = [];
+    if (criteria.typeHint) criteriaSummaryParts.push(criteria.typeHint);
+    const locParts = [criteria.neighborhood, criteria.city, criteria.state].filter(Boolean);
+    if (locParts.length) criteriaSummaryParts.push(locParts.join(", "));
+    const criteriaSummary = criteriaSummaryParts.length ? `em *${criteriaSummaryParts.join(", ")}*` : undefined;
+    const previewMessage = renderWhatsAppList(items, {
+      maxItems: Math.min(pageSize, 5),
+      criteriaSummary,
+      categoryHint: String(integ.get("categoryHint") || ""),
+      showIndexEmojis: true
+    });
 
     logger.info(
       {
@@ -143,7 +152,8 @@ export const agentLookup = async (req: Request, res: Response) => {
       total: ranked.length,
       page,
       pageSize,
-      raw: out.raw
+      raw: out.raw,
+      previewMessage
     });
   } catch (err: any) {
     logger.error({ corrId, ctx: "AgentLookup", step: "error", error: err?.message }, "agent_lookup_err");
@@ -201,12 +211,24 @@ export const agentAuto = async (req: Request, res: Response) => {
       filtros
     });
 
-    // >>> pega do lugar certo (items | raw.data | raw.items | data)
     const providerItems = pickProviderItems(out);
 
     // 4) filtra localmente e pagina
     const ranked = filterAndRankItems(providerItems, criteria);
     const items = paginateRanked(ranked, page, pageSize);
+
+    // mensagem bonita p/ WhatsApp
+    const criteriaSummaryParts: string[] = [];
+    if (criteria.typeHint) criteriaSummaryParts.push(criteria.typeHint);
+    const locParts = [criteria.neighborhood, criteria.city, criteria.state].filter(Boolean);
+    if (locParts.length) criteriaSummaryParts.push(locParts.join(", "));
+    const criteriaSummary = criteriaSummaryParts.length ? `em *${criteriaSummaryParts.join(", ")}*` : undefined;
+    const previewMessage = renderWhatsAppList(items, {
+      maxItems: Math.min(pageSize, 5),
+      criteriaSummary,
+      categoryHint: String(integ.get("categoryHint") || ""),
+      showIndexEmojis: true
+    });
 
     logger.info(
       {
@@ -233,7 +255,8 @@ export const agentAuto = async (req: Request, res: Response) => {
       total: ranked.length,
       page,
       pageSize,
-      raw: out.raw
+      raw: out.raw,
+      previewMessage
     });
   } catch (err: any) {
     logger.error({ corrId, ctx: "AgentAuto", step: "error", error: err?.message }, "agent_auto_err");
