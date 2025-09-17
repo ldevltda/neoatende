@@ -725,6 +725,7 @@ const handleOpenAi = async (
   if (msg.message?.conversation || msg.message?.extendedTextMessage?.text) {
     messagesOpenAi = [];
     messagesOpenAi.push({ role: "system", content: promptSystem });
+    logger.info({ ctx: "OpenAiLocal", step: "pass_1:request", ticketId: ticket.id, model: prompt.model }, "sending to OpenAI");
     for (let i = 0; i < Math.min(maxMessages, messages.length); i++) {
       const message = messages[i];
       if (
@@ -746,7 +747,9 @@ const handleOpenAi = async (
       max_tokens: Number(prompt.maxTokens),
       temperature: Number(prompt.temperature)
     });
-    
+
+    logger.info({ ctx: "OpenAiLocal", step: "pass_1:response", ticketId: ticket.id, choice: chat?.choices?.[0]?.finish_reason }, "openai responded");
+
     let response = chat.choices?.[0]?.message?.content;
 
     if (response?.includes("Ação: Transferir para o setor de atendimento")) {
@@ -760,6 +763,7 @@ const handleOpenAi = async (
       text: response!
     });
     await verifyMessage(sentMessage!, ticket, contact);
+    logger.info({ ctx: "OpenAiLocal", step: "send:text", ticketId: ticket.id, length: (response || "").length }, "sending WA text");
 
     /*
     if (prompt.voice === "texto") {
@@ -861,6 +865,74 @@ const handleOpenAi = async (
   }
   messagesOpenAi = [];
 };
+
+// === Wrapper para logar chamadas ao OpenAI no painel ===
+const logHandleOpenAi = async (
+  label: string,
+  msg: proto.IWebMessageInfo,
+  wbot: Session,
+  ticket: Ticket,
+  contact: Contact,
+  mediaSent?: Message | undefined,
+  ticketTraking?: TicketTraking | null,
+  openAiSettings?: any
+) => {
+  const traceId = `${ticket.id}-${msg?.key?.id || Date.now()}`;
+  const start = Date.now();
+  const bodyPreview = (getBodyMessage(msg) || "").toString().slice(0, 160);
+
+  logger.info(
+    {
+      ctx: "MsgRouter",
+      step: "dispatch_openai:start",
+      traceId,
+      label,
+      ticketId: ticket.id,
+      companyId: ticket.companyId,
+      from: contact?.number,
+      bodyPreview
+    },
+    "calling handleOpenAi"
+  );
+
+  try {
+    await handleOpenAi(
+      msg,
+      wbot,
+      ticket,
+      contact,
+      mediaSent,
+      ticketTraking ?? null,
+      openAiSettings ?? null
+    );
+
+    logger.info(
+      {
+        ctx: "MsgRouter",
+        step: "dispatch_openai:done",
+        traceId,
+        label,
+        ticketId: ticket.id,
+        tookMs: Date.now() - start
+      },
+      "handleOpenAi finished"
+    );
+  } catch (err: any) {
+    logger.error(
+      {
+        ctx: "MsgRouter",
+        step: "dispatch_openai:error",
+        traceId,
+        label,
+        ticketId: ticket.id,
+        error: err?.message
+      },
+      "handleOpenAi failed"
+    );
+    throw err;
+  }
+};
+
 
 export const transferQueue = async (
   queueId: number,
@@ -1147,7 +1219,7 @@ const verifyQueue = async (
     }
     //inicia integração openai
     if (!msg.key.fromMe && !ticket.isGroup && !isNil(queues[0]?.promptId)) {
-      await handleOpenAi(msg, wbot, ticket, contact, mediaSent);
+      await logHandleOpenAi("queue:first", msg, wbot, ticket, contact, mediaSent, undefined, undefined);
 
       await ticket.update({
         useIntegration: true,
@@ -1281,7 +1353,7 @@ const verifyQueue = async (
         !ticket.isGroup &&
         !isNil(choosenQueue?.promptId)
       ) {
-        await handleOpenAi(msg, wbot, ticket, contact, mediaSent);
+        await logHandleOpenAi("queue:chosen", msg, wbot, ticket, contact, mediaSent, undefined, undefined);
 
         await ticket.update({
           useIntegration: true,
@@ -2254,6 +2326,22 @@ const handleMessage = async (
   if (!isValidMsg(msg)) return;
 
   try {
+    // ---- LOG DE ENTRADA NO ROTEADOR ----
+    const bodyPreview =
+      (getBodyMessage(msg) || "").toString().slice(0, 160);
+    const waId = msg?.key?.id;
+    const remote = msg?.key?.remoteJid;
+    logger.info(
+      {
+        ctx: "MsgRouter",
+        step: "incoming",
+        waId,
+        remote,
+        bodyPreview
+      },
+      "WA message received"
+    );
+
     let msgContact: IMe;
     let groupContact: Contact | undefined;
 
@@ -2597,14 +2685,15 @@ const handleMessage = async (
         maxMessages: parseInt(maxMessages)
       };
 
-      await handleOpenAi(
+      await logHandleOpenAi(
+        "flowbuilder:openai-node",
         msg,
         wbot,
         ticket,
         contact,
         mediaSent,
         ticketTraking,
-        openAiSettings,
+        openAiSettings
       );
 
       return;
@@ -2618,7 +2707,7 @@ const handleMessage = async (
       !ticket.userId &&
       !isNil(whatsapp.promptId)
     ) {
-      await handleOpenAi(msg, wbot, ticket, contact, mediaSent);
+      await logHandleOpenAi("conn:whatsapp-prompt", msg, wbot, ticket, contact, mediaSent, undefined, undefined);
     }
 
     //integraçao na conexao
@@ -2658,7 +2747,7 @@ const handleMessage = async (
       ticket.useIntegration &&
       ticket.queueId
     ) {
-      await handleOpenAi(msg, wbot, ticket, contact, mediaSent);
+      await logHandleOpenAi("queue:with-prompt", msg, wbot, ticket, contact, mediaSent, undefined, undefined);
     }
 
     if (
