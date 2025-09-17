@@ -213,6 +213,37 @@ function parseMoney(text?: string): number | undefined {
   return undefined;
 }
 
+// Tenta extrair range "de X a Y" ou "entre X e Y"
+function parseRange(text?: string): { min?: number; max?: number } | undefined {
+  if (!text) return;
+  const t = text.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+
+  // de 300 a 500 mil / entre 300 e 500 mil
+  const m = t.match(/(?:de|entre)\s+([^\s]+(?:\s+[^\s]+)*)\s+(?:a|e|ate)\s+([^\s]+(?:\s+[^\s]+)*)/);
+  if (m) {
+    const n1 = parseMoney(m[1]);
+    const n2 = parseMoney(m[2]);
+    if (n1 && n2) {
+      return { min: Math.min(n1, n2), max: Math.max(n1, n2) };
+    }
+  }
+
+  // a partir de 300 mil
+  const mMin = t.match(/a\s+partir\s+de\s+([^\s].*)/);
+  if (mMin) {
+    const n = parseMoney(mMin[1]);
+    if (n) return { min: n };
+  }
+
+  // até 500 mil
+  if (/(?:ate|até)\s+/.test(t)) {
+    const n = parseMoney(t);
+    if (n) return { max: n };
+  }
+
+  return undefined;
+}
+
 // Cria { pesquisa.filter } a partir do texto livre
 function buildVistaPesquisaFromText(text?: string) {
   const out: any = { filter: {} as any };
@@ -234,25 +265,43 @@ function buildVistaPesquisaFromText(text?: string) {
     if (bairro) out.filter.Bairro = [bairro];
   }
 
-  // Cidade/UF: "São José/SC"
+  // Cidade/UF: "São José/SC"  -> Cidade = ["São José"], UF = ["SC"]
   const mCidadeUF = t.match(/([A-Za-z\s\.]+)\/([A-Za-z]{2})/);
   if (mCidadeUF) {
     const cidade = mCidadeUF[1].trim().replace(/\s{2,}/g, " ");
     const uf = mCidadeUF[2].toUpperCase();
     if (cidade) out.filter.Cidade = [cidade];
-    out.filter.Estado = [uf];
+    out.filter.UF = [uf]; // Vista usa UF (não "Estado")
   }
 
-  // Preço máximo: "até 500 mil", "ate 500k", "até 600.000"
-  const hasAte = /(?:ate|até)\s+/i.test(t);
-  if (hasAte) {
-    const val = parseMoney(t);
-    if (val) {
-      out.filter.ValorVenda = { ...(out.filter.ValorVenda || {}), max: val };
+  // Preço: range/min/max
+  const r = parseRange(t);
+  if (r) {
+    if (typeof r.min === "number" && typeof r.max === "number") {
+      out.filter.ValorVenda = [r.min, r.max]; // range obrigatório = array de 2 números
+    } else if (typeof r.max === "number") {
+      out.filter.ValorVenda = [0, r.max];     // "até X" => [0, X]
+    } else if (typeof r.min === "number") {
+      out.filter.ValorVenda = [r.min, 9_999_999_999]; // "a partir de X" => [X, +inf]
     }
   }
 
   return out;
+}
+
+// Normaliza paginação salva como {strategy,page_param,size_param} -> {type,param,sizeParam}
+function normalizePaginationShape(pag: any): PaginationConfig | undefined {
+  if (!pag) return undefined;
+  if (pag.type) return pag as PaginationConfig;
+  if (pag.strategy) {
+    const typeMap: any = { page: "page", offset: "offset", cursor: "cursor", none: "none" };
+    return {
+      type: typeMap[pag.strategy] || "none",
+      param: pag.page_param || (pag.strategy === "offset" ? "offset" : "page"),
+      sizeParam: pag.size_param || (pag.strategy === "offset" ? "limit" : "pageSize")
+    };
+  }
+  return pag as PaginationConfig;
 }
 
 /** ===== Executor principal ===== */
@@ -264,7 +313,8 @@ export async function runSearch(
 
   const endpoint: EndpointConfig = (integration as any).get("endpoint");
   const auth: AuthConfig = (integration as any).get("auth");
-  const pagination: PaginationConfig = (integration as any).get("pagination");
+  const rawPagination: any = (integration as any).get("pagination");
+  const pagination = normalizePaginationShape(rawPagination);
   const rolemap: any = (integration as any).get("rolemap");
   const schema: { itemsPath?: string; totalPath?: string } | undefined = (integration as any).get("schema");
 
@@ -324,7 +374,7 @@ export async function runSearch(
       hasDefaults:
         !!endpoint?.default_query || !!endpoint?.default_body || !!endpoint?.defaults,
       hasAuth: !!auth && (auth as any).type !== "none",
-      paginationType: (pagination as any)?.type || "none",
+      paginationType: pagination?.type || "none",
       page,
       pageSize,
       plannedParams
