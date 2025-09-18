@@ -11,12 +11,12 @@ import {
   Switch
 } from "@material-ui/core";
 
-import {
-  AllInboxRounded,
-  HourglassEmptyRounded,
-  MoveToInbox,
-  Search
-} from "@material-ui/icons";
+// ===== ÍCONES (Material v5) =====
+import AllInboxRounded from "@mui/icons-material/AllInboxRounded";
+import HourglassEmptyRounded from "@mui/icons-material/HourglassEmptyRounded";
+import MoveToInbox from "@mui/icons-material/MoveToInbox";
+import Search from "@mui/icons-material/Search";
+// =================================
 
 import NewTicketModal from "../NewTicketModal";
 import TicketsList from "../TicketsList";

@@ -12,12 +12,12 @@ import { Grid, LinearProgress, Typography } from "@material-ui/core";
 import api from "../../services/api";
 import { has, get, isNull } from "lodash";
 import CardCounter from "../../components/Dashboard/CardCounter";
-import GroupIcon from "@material-ui/icons/Group";
-import ScheduleIcon from "@material-ui/icons/Schedule";
-import EventAvailableIcon from "@material-ui/icons/EventAvailable";
-import CheckCircleIcon from "@material-ui/icons/CheckCircle";
-import WhatsAppIcon from "@material-ui/icons/WhatsApp";
-import ListAltIcon from "@material-ui/icons/ListAlt";
+import GroupIcon from "@mui/icons-material/Group";
+import ScheduleIcon from "@mui/icons-material/Schedule";
+import EventAvailableIcon from "@mui/icons-material/EventAvailable";
+import CheckCircleIcon from "@mui/icons-material/CheckCircle";
+import WhatsAppIcon from "@mui/icons-material/WhatsApp";
+import ListAltIcon from "@mui/icons-material/ListAlt";
 import { useDate } from "../../hooks/useDate";
 
 import { SocketContext } from "../../context/Socket/SocketContext";

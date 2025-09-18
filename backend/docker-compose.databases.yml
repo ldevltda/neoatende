@@ -1,6 +1,6 @@
 services:
   cache:
-    image: redis:8.0.1
+    image: redis:1.0.0
     restart: always
     ports:
       - "${REDIS_PORT}:${REDIS_PORT}"

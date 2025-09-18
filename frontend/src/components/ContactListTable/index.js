@@ -8,11 +8,9 @@ import {
   TableRow,
   IconButton,
 } from "@material-ui/core";
-import {
-  Edit as EditIcon,
-  DeleteOutline as DeleteOutlineIcon,
-  People as PeopleIcon,
-} from "@material-ui/icons";
+import EditIcon from '@mui/icons-material/Edit';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import PeopleIcon from '@mui/icons-material/People';
 
 import TableRowSkeleton from "../../components/TableRowSkeleton";
 

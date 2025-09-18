@@ -24,8 +24,8 @@ import {
 } from "@material-ui/core";
 import IconButton from "@material-ui/core/IconButton";
 import Typography from "@material-ui/core/Typography";
-import DeleteOutlineIcon from "@material-ui/icons/DeleteOutline";
-import AttachFileIcon from "@material-ui/icons/AttachFile";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import AttachFileIcon from "@mui/icons-material/AttachFile";
 
 import { green } from "@material-ui/core/colors";
 

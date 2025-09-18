@@ -15,7 +15,7 @@ import { Formik, Form, Field } from 'formik';
 import ButtonWithSpinner from "../ButtonWithSpinner";
 import ConfirmationModal from "../ConfirmationModal";
 
-import { Edit as EditIcon } from "@material-ui/icons";
+import EditIcon from '@mui/icons-material/Edit';
 
 import { toast } from "react-toastify";
 import useHelps from "../../hooks/useHelps";

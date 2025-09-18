@@ -1,5 +1,7 @@
 import { Button, Dialog, DialogActions, DialogContent, DialogTitle, Grid, IconButton, makeStyles, Modal, Typography } from "@material-ui/core";
-import { CloseOutlined, FontDownload, ImportContacts } from "@material-ui/icons";
+import CloseOutlined from '@mui/icons-material/CloseOutlined';
+import FontDownload from '@mui/icons-material/FontDownload';
+import ImportContacts from '@mui/icons-material/ImportContacts';
 import React, { useState } from "react";
 import { FaDownload } from "react-icons/fa";
 import * as XLSX from 'xlsx';

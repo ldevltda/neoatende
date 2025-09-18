@@ -1,8 +1,8 @@
 import React, { useState } from "react";
 import qs from "query-string";
 import IconButton from "@material-ui/core/IconButton";
-import VisibilityIcon from "@material-ui/icons/Visibility";
-import VisibilityOffIcon from "@material-ui/icons/VisibilityOff";
+import VisibilityIcon from "@mui/icons-material/Visibility";
+import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 import InputAdornment from "@material-ui/core/InputAdornment";
 import * as Yup from "yup";
 import { useHistory } from "react-router-dom";

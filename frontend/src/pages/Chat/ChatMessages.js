@@ -9,7 +9,7 @@ import {
   Paper,
   Typography,
 } from "@material-ui/core";
-import SendIcon from "@material-ui/icons/Send";
+import SendIcon from "@mui/icons-material/Send";
 
 import { AuthContext } from "../../context/Auth/AuthContext";
 import { useDate } from "../../hooks/useDate";

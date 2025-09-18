@@ -15,7 +15,7 @@ import { i18n } from "../../translate/i18n";
 import { nomeEmpresa } from "../../../package.json";
 import { AuthContext } from "../../context/Auth/AuthContext";
 import logo from "../../assets/logo.png";
-import {LanguageOutlined} from "@material-ui/icons";
+import {LanguageOutlined} from "@mui/icons-material";
 import {IconButton, Menu, MenuItem} from "@material-ui/core";
 import LanguageControl from "../../components/LanguageControl";
 

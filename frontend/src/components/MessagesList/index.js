@@ -12,7 +12,9 @@ import {
   makeStyles,
 } from "@material-ui/core";
 
-import { Block, ExpandMore, GetApp } from "@material-ui/icons";
+import Block from '@mui/icons-material/Block';
+import ExpandMore from '@mui/icons-material/ExpandMore';
+import GetApp from '@mui/icons-material/GetApp';
 
 import MarkdownWrapper from "../MarkdownWrapper";
 import ModalImageCors from "../ModalImageCors";

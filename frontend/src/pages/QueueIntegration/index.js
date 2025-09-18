@@ -26,9 +26,9 @@ import {
 import {
   DeleteOutline,
   Edit
-} from "@material-ui/icons";
+} from "@mui/icons-material";
 
-import SearchIcon from "@material-ui/icons/Search";
+import SearchIcon from "@mui/icons-material/Search";
 
 import MainContainer from "../../components/MainContainer";
 import MainHeader from "../../components/MainHeader";

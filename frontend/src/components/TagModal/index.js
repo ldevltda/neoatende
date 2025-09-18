@@ -13,7 +13,7 @@ import DialogActions from "@material-ui/core/DialogActions";
 import DialogContent from "@material-ui/core/DialogContent";
 import DialogTitle from "@material-ui/core/DialogTitle";
 import CircularProgress from "@material-ui/core/CircularProgress";
-import { Colorize } from "@material-ui/icons";
+import { Colorize } from "@mui/icons-material";
 import { ColorBox } from 'material-ui-color';
 
 import { i18n } from "../../translate/i18n";

@@ -91,7 +91,7 @@ import {
 } from "@mui/icons-material";
 
 import { useNodeStorage } from "../../stores/useNodeStorage";
-import { ConfirmationNumber } from "@material-ui/icons";
+import { ConfirmationNumber } from "@mui/icons-material";
 
 const useStyles = makeStyles((theme) => ({
   mainPaper: {

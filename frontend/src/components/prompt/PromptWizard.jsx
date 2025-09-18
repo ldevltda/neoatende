@@ -5,7 +5,8 @@ import {
   Button, TextField, Grid, Chip, IconButton, Tooltip,
   Typography, Box
 } from "@material-ui/core";
-import { Add, Close } from "@material-ui/icons";
+import Add from '@mui/icons-material/Add';
+import Close from '@mui/icons-material/Close';
 import api from "../../services/api";
 
 const tones = [

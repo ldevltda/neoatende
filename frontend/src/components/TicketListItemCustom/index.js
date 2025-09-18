@@ -27,13 +27,13 @@ import { TicketsContext } from "../../context/Tickets/TicketsContext";
 import toastError from "../../errors/toastError";
 import { v4 as uuidv4 } from "uuid";
 
-import RoomIcon from '@material-ui/icons/Room';
-import WhatsAppIcon from "@material-ui/icons/WhatsApp";
-import AndroidIcon from "@material-ui/icons/Android";
-import VisibilityIcon from "@material-ui/icons/Visibility";
+import RoomIcon from '@mui/icons-material/Room';
+import WhatsAppIcon from "@mui/icons-material/WhatsApp";
+import AndroidIcon from "@mui/icons-material/Android";
+import VisibilityIcon from "@mui/icons-material/Visibility";
 import TicketMessagesDialog from "../TicketMessagesDialog";
-import DoneIcon from '@material-ui/icons/Done';
-import ClearOutlinedIcon from '@material-ui/icons/ClearOutlined';
+import DoneIcon from '@mui/icons-material/Done';
+import ClearOutlinedIcon from '@mui/icons-material/ClearOutlined';
 import contrastColor from "../../helpers/contrastColor";
 import ContactTag from "../ContactTag";
 

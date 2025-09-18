@@ -31,7 +31,7 @@ import {
   Tab,
   Tabs,
 } from "@material-ui/core";
-import { Colorize } from "@material-ui/icons";
+import { Colorize } from "@mui/icons-material";
 import { QueueOptions } from "../QueueOptions";
 import SchedulesForm from "../SchedulesForm";
 

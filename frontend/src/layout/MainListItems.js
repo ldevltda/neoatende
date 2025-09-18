@@ -563,7 +563,7 @@ const MainListItems = (props) => {
               </Hidden> 
               */}
               <Typography style={{ fontSize: "12px", padding: "10px", textAlign: "right", fontWeight: "bold" }}>
-                8.0.1
+                1.0.0
               </Typography>
             </React.Fragment>
             }

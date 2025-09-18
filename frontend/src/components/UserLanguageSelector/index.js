@@ -1,8 +1,8 @@
 import React, { useContext, useState } from "react";
 
 import { Button, Menu, MenuItem } from "@material-ui/core";
-import TranslateIcon from "@material-ui/icons/Translate";
-import ExpandMoreIcon from "@material-ui/icons/ExpandMore";
+import TranslateIcon from "@mui/icons-material/Translate";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 
 import { i18n } from "../../translate/i18n";
 import { AuthContext } from "../../context/Auth/AuthContext";
