@@ -16,6 +16,10 @@ import {
   useMediaQuery,
   FormControlLabel,
   Switch,
+  FormControl,
+  FormLabel,
+  RadioGroup,
+  Radio,
 } from "@material-ui/core";
 
 // ===== ÍCONES (Material v5) =====
@@ -26,11 +30,9 @@ import AccountCircle from "@mui/icons-material/AccountCircle";
 
 import MainListItems from "./MainListItems";
 import NotificationsPopOver from "../components/NotificationsPopOver";
-// import NotificationsVolume from "../components/NotificationsVolume"; // sai do header
 import UserModal from "../components/UserModal";
 import { AuthContext } from "../context/Auth/AuthContext";
 import BackdropLoading from "../components/BackdropLoading";
-// import DarkMode from "../components/DarkMode"; // não é necessário aqui
 import { i18n } from "../translate/i18n";
 import toastError from "../errors/toastError";
 import AnnouncementsPopover from "../components/AnnouncementsPopover";
@@ -55,7 +57,7 @@ const useStyles = makeStyles((theme) => ({
     },
     backgroundColor: theme.palette.fancyBackground,
     "& .MuiButton-outlinedPrimary": {
-      color: theme.mode === "light" ? "#FFF" : "#FFF",
+      color: "#FFF",
       backgroundColor:
         theme.mode === "light" ? theme.palette.primary.main : "#1c1c1c",
     },
@@ -63,9 +65,7 @@ const useStyles = makeStyles((theme) => ({
       color: theme.mode === "light" ? "Primary" : "#FFF",
     },
   },
-  avatar: {
-    width: "100%",
-  },
+  avatar: { width: "100%" },
   toolbar: {
     paddingRight: 24,
     color: theme.palette.dark.main,
@@ -77,9 +77,7 @@ const useStyles = makeStyles((theme) => ({
     justifyContent: "space-between",
     padding: "0 8px",
     minHeight: "48px",
-    [theme.breakpoints.down("sm")]: {
-      height: "48px",
-    },
+    [theme.breakpoints.down("sm")]: { height: "48px" },
   },
   appBar: {
     zIndex: theme.zIndex.drawer + 1,
@@ -95,9 +93,7 @@ const useStyles = makeStyles((theme) => ({
       easing: theme.transitions.easing.sharp,
       duration: theme.transitions.duration.enteringScreen,
     }),
-    [theme.breakpoints.down("sm")]: {
-      display: "none",
-    },
+    [theme.breakpoints.down("sm")]: { display: "none" },
   },
   menuButton: {
     marginRight: 36,
@@ -108,14 +104,8 @@ const useStyles = makeStyles((theme) => ({
       backgroundColor: "rgba(255,255,255,0.08)",
     },
   },
-  menuButtonHidden: {
-    display: "none",
-  },
-  title: {
-    flexGrow: 1,
-    fontSize: 14,
-    color: "white",
-  },
+  menuButtonHidden: { display: "none" },
+  title: { flexGrow: 1, fontSize: 14, color: "white" },
   drawerPaper: {
     position: "relative",
     whiteSpace: "nowrap",
@@ -124,9 +114,7 @@ const useStyles = makeStyles((theme) => ({
       easing: theme.transitions.easing.sharp,
       duration: theme.transitions.duration.enteringScreen,
     }),
-    [theme.breakpoints.down("sm")]: {
-      width: "100%",
-    },
+    [theme.breakpoints.down("sm")]: { width: "100%" },
     ...theme.scrollbarStylesSoft,
   },
   drawerPaperClose: {
@@ -136,24 +124,12 @@ const useStyles = makeStyles((theme) => ({
       duration: theme.transitions.duration.leavingScreen,
     }),
     width: theme.spacing(7),
-    [theme.breakpoints.up("sm")]: {
-      width: theme.spacing(9),
-    },
-    [theme.breakpoints.down("sm")]: {
-      width: "100%",
-    },
+    [theme.breakpoints.up("sm")]: { width: theme.spacing(9) },
+    [theme.breakpoints.down("sm")]: { width: "100%" },
   },
-  appBarSpacer: {
-    minHeight: "48px",
-  },
-  content: {
-    flex: 1,
-    overflow: "auto",
-  },
-  container: {
-    paddingTop: theme.spacing(4),
-    paddingBottom: theme.spacing(4),
-  },
+  appBarSpacer: { minHeight: "48px" },
+  content: { flex: 1, overflow: "auto" },
+  container: { paddingTop: theme.spacing(4), paddingBottom: theme.spacing(4) },
   paper: {
     padding: theme.spacing(2),
     display: "flex",
@@ -170,16 +146,12 @@ const useStyles = makeStyles((theme) => ({
     width: "80%",
     height: "auto",
     maxWidth: 180,
-    [theme.breakpoints.down("sm")]: {
-      width: "auto",
-      height: "80%",
-      maxWidth: 180,
-    },
+    [theme.breakpoints.down("sm")]: { width: "auto", height: "80%", maxWidth: 180 },
     logo: theme.logo,
   },
 }));
 
-const LoggedInLayout = ({ children, themeToggle }) => {
+const LoggedInLayout = ({ children }) => {
   const classes = useStyles();
   const [userModalOpen, setUserModalOpen] = useState(false);
   const [anchorEl, setAnchorEl] = useState(null);
@@ -193,38 +165,30 @@ const LoggedInLayout = ({ children, themeToggle }) => {
   const { colorMode } = useContext(ColorModeContext);
   const greaterThenSm = useMediaQuery(theme.breakpoints.up("sm"));
 
-  // Volume 0/1 guardado no localStorage
+  // volume 0/1 salvo em localStorage
   const [volume, setVolume] = useState(
     Number(localStorage.getItem("volume") || 1)
   );
-  const toggleVolume = () => {
-    const next = volume ? 0 : 1;
-    setVolume(next);
-    localStorage.setItem("volume", String(next));
+  const setVolumeAndPersist = (n) => {
+    setVolume(n);
+    localStorage.setItem("volume", String(n));
   };
 
   const { dateToClient } = useDate();
-
   const socketManager = useContext(SocketContext);
 
   useEffect(() => {
-    if (document.body.offsetWidth > 1200) {
-      setDrawerOpen(true);
-    }
+    if (document.body.offsetWidth > 1200) setDrawerOpen(true);
   }, []);
 
   useEffect(() => {
-    if (document.body.offsetWidth < 600) {
-      setDrawerVariant("temporary");
-    } else {
-      setDrawerVariant("permanent");
-    }
+    if (document.body.offsetWidth < 600) setDrawerVariant("temporary");
+    else setDrawerVariant("permanent");
   }, [drawerOpen]);
 
   useEffect(() => {
     const companyId = localStorage.getItem("companyId");
     const userId = localStorage.getItem("userId");
-
     const socket = socketManager.getSocket(companyId);
 
     socket.on(`company-${companyId}-auth`, (data) => {
@@ -238,10 +202,7 @@ const LoggedInLayout = ({ children, themeToggle }) => {
     });
 
     socket.emit("userStatus");
-    const interval = setInterval(() => {
-      socket.emit("userStatus");
-    }, 1000 * 60 * 5);
-
+    const interval = setInterval(() => socket.emit("userStatus"), 1000 * 60 * 5);
     return () => {
       socket.disconnect();
       clearInterval(interval);
@@ -252,42 +213,41 @@ const LoggedInLayout = ({ children, themeToggle }) => {
     setAnchorEl(event.currentTarget);
     setMenuOpen(true);
   };
-
   const handleCloseMenu = () => {
     setAnchorEl(null);
     setMenuOpen(false);
   };
-
   const handleOpenUserModal = () => {
     setUserModalOpen(true);
     handleCloseMenu();
   };
-
   const handleClickLogout = () => {
     handleCloseMenu();
     handleLogout();
   };
-
   const drawerClose = () => {
-    if (document.body.offsetWidth < 600) {
-      setDrawerOpen(false);
-    }
+    if (document.body.offsetWidth < 600) setDrawerOpen(false);
   };
-
   const handleMenuItemClick = () => {
     const { innerWidth: width } = window;
-    if (width <= 600) {
-      setDrawerOpen(false);
+    if (width <= 600) setDrawerOpen(false);
+  };
+
+  // radios: tema
+  const handleThemeChange = (e) => {
+    const value = e.target.value; // "light" | "dark"
+    if (value !== theme.mode) {
+      colorMode.toggleColorMode();
     }
   };
 
-  const toggleColorMode = () => {
-    colorMode.toggleColorMode();
+  // radios: volume
+  const handleVolumeChange = (e) => {
+    const v = e.target.value === "on" ? 1 : 0;
+    setVolumeAndPersist(v);
   };
 
-  if (loading) {
-    return <BackdropLoading />;
-  }
+  if (loading) return <BackdropLoading />;
 
   return (
     <div className={classes.root}>
@@ -364,7 +324,7 @@ const LoggedInLayout = ({ children, themeToggle }) => {
             )}
           </Typography>
 
-          {/* Ícones visíveis: Notificações, Anúncios, Chat, Perfil */}
+          {/* Ícones visíveis: Notificações, Comunicados, Chat e Perfil */}
           {user.id && <NotificationsPopOver volume={volume} />}
 
           <AnnouncementsPopover />
@@ -388,14 +348,8 @@ const LoggedInLayout = ({ children, themeToggle }) => {
               id="menu-appbar"
               anchorEl={anchorEl}
               getContentAnchorEl={null}
-              anchorOrigin={{
-                vertical: "bottom",
-                horizontal: "right",
-              }}
-              transformOrigin={{
-                vertical: "top",
-                horizontal: "right",
-              }}
+              anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+              transformOrigin={{ vertical: "top", horizontal: "right" }}
               open={menuOpen}
               onClose={handleCloseMenu}
             >
@@ -404,57 +358,71 @@ const LoggedInLayout = ({ children, themeToggle }) => {
                 {i18n.t("mainDrawer.appBar.user.profile")}
               </MenuItem>
 
-              {/* Tema */}
+              {/* Selecione o tema */}
               <MenuItem dense disableGutters>
                 <div style={{ padding: "6px 16px", width: "100%" }}>
-                  <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>
-                    {i18n.t("common.theme") || "Tema"}
-                  </div>
-                  <FormControlLabel
-                    control={
-                      <Switch
-                        checked={theme.mode === "dark"}
-                        onChange={toggleColorMode}
-                        color="primary"
-                        size="small"
+                  <FormControl component="fieldset" style={{ width: "100%" }}>
+                    <FormLabel component="legend" style={{ fontSize: 12, opacity: 0.7 }}>
+                      {i18n.t("common.selectTheme") || "Selecione o tema"}
+                    </FormLabel>
+                    <RadioGroup
+                      aria-label="theme"
+                      name="theme"
+                      value={theme.mode}
+                      onChange={handleThemeChange}
+                    >
+                      <FormControlLabel
+                        value="light"
+                        control={<Radio color="primary" />}
+                        label={i18n.t("common.lightMode") || "Light"}
                       />
-                    }
-                    label={
-                      theme.mode === "dark"
-                        ? (i18n.t("common.darkMode") || "dark")
-                        : (i18n.t("common.lightMode") || "claro")
-                    }
-                  />
+                      <FormControlLabel
+                        value="dark"
+                        control={<Radio color="primary" />}
+                        label={i18n.t("common.darkMode") || "Dark"}
+                      />
+                    </RadioGroup>
+                  </FormControl>
                 </div>
               </MenuItem>
 
-              {/* Som */}
+              {/* Defina volume */}
               <MenuItem dense disableGutters>
                 <div style={{ padding: "6px 16px", width: "100%" }}>
-                  <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>
-                    {i18n.t("common.sound") || "Som"}
-                  </div>
-                  <FormControlLabel
-                    control={
-                      <Switch
-                        checked={!!volume}
-                        onChange={toggleVolume}
-                        color="primary"
-                        size="small"
+                  <FormControl component="fieldset" style={{ width: "100%" }}>
+                    <FormLabel component="legend" style={{ fontSize: 12, opacity: 0.7 }}>
+                      {i18n.t("common.setVolume") || "Defina volume"}
+                    </FormLabel>
+                    <RadioGroup
+                      aria-label="volume"
+                      name="volume"
+                      value={volume ? "on" : "off"}
+                      onChange={handleVolumeChange}
+                    >
+                      <FormControlLabel
+                        value="on"
+                        control={<Radio color="primary" />}
+                        label={i18n.t("common.on") || "Ligado"}
                       />
-                    }
-                    label={volume ? (i18n.t("common.on") || "ligado") : (i18n.t("common.off") || "desligado")}
-                  />
+                      <FormControlLabel
+                        value="off"
+                        control={<Radio color="primary" />}
+                        label={i18n.t("common.off") || "Desligado"}
+                      />
+                    </RadioGroup>
+                  </FormControl>
                 </div>
               </MenuItem>
 
-              {/* Idioma */}
+              {/* Selecione um idioma */}
               <MenuItem dense disableGutters>
                 <div style={{ padding: "6px 16px", width: "100%" }}>
-                  <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>
-                    {i18n.t("common.language") || "Idioma"}
+                  <FormLabel component="legend" style={{ fontSize: 12, opacity: 0.7 }}>
+                    {i18n.t("common.selectLanguage") || "Selecione um idioma"}
+                  </FormLabel>
+                  <div style={{ marginTop: 6 }}>
+                    <LanguageControl />
                   </div>
-                  <LanguageControl />
                 </div>
               </MenuItem>
 
