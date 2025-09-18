@@ -390,6 +390,7 @@ const MainListItems = (props) => {
                   </ListItemIcon>
                   <ListItemText
                     primary={i18n.t("mainDrawer.listItems.campaigns")}
+                    primaryTypographyProps={{ variant: "body2" }}
                   />
                   {openCampaignSubmenu ? (
                     <ExpandLessIcon />
@@ -408,7 +409,7 @@ const MainListItems = (props) => {
                       <ListItemIcon>
                         <ListIcon />
                       </ListItemIcon>
-                      <ListItemText primary="Listagem" />
+                      <ListItemText primary="Listagem"  primaryTypographyProps={{ variant: "body2" }} />
                     </ListItem>
                     <ListItem
                       onClick={() => history.push("/contact-lists")}
@@ -417,7 +418,7 @@ const MainListItems = (props) => {
                       <ListItemIcon>
                         <PeopleIcon />
                       </ListItemIcon>
-                      <ListItemText primary="Listas de Contatos" />
+                      <ListItemText primary="Listas de Contatos"  primaryTypographyProps={{ variant: "body2" }}/>
                     </ListItem>
                     <ListItem
                       onClick={() => history.push("/campaigns-config")}
@@ -426,7 +427,7 @@ const MainListItems = (props) => {
                       <ListItemIcon>
                         <SettingsOutlinedIcon />
                       </ListItemIcon>
-                      <ListItemText primary="Configurações" />
+                      <ListItemText primary="Configurações"  primaryTypographyProps={{ variant: "body2" }}/>
                     </ListItem>
                   </List>
                 </Collapse>
