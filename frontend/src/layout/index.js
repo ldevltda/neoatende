@@ -13,13 +13,9 @@ import {
   Menu,
   useTheme,
   useMediaQuery,
-  FormControl,
-  FormLabel,
-  RadioGroup,
-  Radio,
-  FormControlLabel,
-  Switch,
   Box,
+  Tooltip,
+  Switch,
 } from "@material-ui/core";
 
 // ===== ÍCONES (Material v5) =====
@@ -40,7 +36,6 @@ import AnnouncementsPopover from "../components/AnnouncementsPopover";
 import logo from "../assets/logo.png";
 import { SocketContext } from "../context/Socket/SocketContext";
 import ChatPopover from "../pages/Chat/ChatPopover";
-import { useDate } from "../hooks/useDate";
 import ColorModeContext from "../layout/themeContext";
 import LanguageControl from "../components/LanguageControl";
 
@@ -86,10 +81,13 @@ const useStyles = makeStyles((theme) => ({
     marginRight: 36,
     color: "#FFFFFF",
     backgroundColor: "transparent",
-    "&:hover": { color: "#9FE870", backgroundColor: "rgba(255,255,255,0.08)" },
+    "&:hover": {
+      color: "#9FE870",
+      backgroundColor: "rgba(255,255,255,0.08)",
+    },
   },
   menuButtonHidden: { display: "none" },
-  titleSpacer: { flexGrow: 1 }, // só um spacer, sem texto (header limpo)
+  titleSpacer: { flexGrow: 1 },
   drawerPaper: {
     position: "relative",
     whiteSpace: "nowrap",
@@ -126,16 +124,17 @@ const useStyles = makeStyles((theme) => ({
     [theme.breakpoints.down("sm")]: { width: "auto", height: "80%", maxWidth: 180 },
     logo: theme.logo,
   },
-  // estilos do menu de perfil
-  menuBlock: { padding: "8px 16px" },
+
+  // Menu do avatar
+  menuBlock: { padding: "10px 16px" },
   sectionTitle: { fontSize: 12, opacity: 0.7, marginBottom: 6 },
-  greyButton: {
-    margin: "6px 16px 12px",
-    padding: "6px 10px",
-    background: "#eee",
-    borderRadius: 6,
-    display: "inline-block",
+  profileRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "nowrap",
   },
+  dividerDense: { margin: "8px 0" },
 }));
 
 const LoggedInLayout = ({ children }) => {
@@ -150,18 +149,17 @@ const LoggedInLayout = ({ children }) => {
 
   const theme = useTheme();
   const { colorMode } = useContext(ColorModeContext);
-  useMediaQuery(theme.breakpoints.up("sm")); // mantido se precisar
+  useMediaQuery(theme.breakpoints.up("sm"));
 
-  const { dateToClient } = useDate();
   const socketManager = useContext(SocketContext);
 
-  // volume 0/1 salvo em localStorage
+  // volume 0/1 no localStorage
   const [volume, setVolume] = useState(
     Number(localStorage.getItem("volume") || 1)
   );
-  const setVolumeAndPersist = (n) => {
-    setVolume(n);
-    localStorage.setItem("volume", String(n));
+  const setVolumeAndPersist = (v) => {
+    setVolume(v);
+    localStorage.setItem("volume", String(v));
   };
 
   useEffect(() => {
@@ -216,16 +214,17 @@ const LoggedInLayout = ({ children }) => {
     if (document.body.offsetWidth < 600) setDrawerOpen(false);
   };
 
-  // radios: tema
-  const handleThemeChange = (e) => {
-    const value = e.target.value; // "light" | "dark"
-    if (value !== theme.mode) colorMode.toggleColorMode();
+  // Switch de tema
+  const handleThemeToggle = (e) => {
+    const wantsDark = e.target.checked; // checked => Dark
+    const isDark = theme.mode === "dark";
+    if (wantsDark !== isDark) colorMode.toggleColorMode();
   };
 
-  // radios: volume
-  const handleVolumeChange = (e) => {
-    const v = e.target.value === "on" ? 1 : 0;
-    setVolumeAndPersist(v);
+  // Switch de volume
+  const handleVolumeToggle = (e) => {
+    const on = e.target.checked;
+    setVolumeAndPersist(on ? 1 : 0);
   };
 
   if (loading) return <BackdropLoading />;
@@ -281,14 +280,15 @@ const LoggedInLayout = ({ children }) => {
             <MenuIcon />
           </IconButton>
 
-          {/* Header limpo: só um spacer no meio */}
+          {/* Header sem textos */}
           <div className={classes.titleSpacer} />
 
-          {/* Ícones visíveis: Notificações, Comunicados, Chat e Perfil */}
+          {/* Ícones visíveis */}
           {user?.id && <NotificationsPopOver volume={volume} />}
           <AnnouncementsPopover />
           <ChatPopover />
 
+          {/* Avatar / Menu */}
           <div>
             <IconButton
               aria-label="account of current user"
@@ -310,94 +310,84 @@ const LoggedInLayout = ({ children }) => {
               open={menuOpen}
               onClose={handleCloseMenu}
             >
-              {/* Header do menu: Empresa / Usuário / Perfil */}
+              {/* 1ª linha: Empresa | Usuário + ícone ver perfil */}
               <Box className={classes.menuBlock}>
-                <Typography variant="subtitle2" style={{ fontWeight: 700 }}>
-                  {user?.company?.name || ""}
-                </Typography>
-                <Typography variant="body2" style={{ opacity: 0.9 }}>
-                  {user?.name || ""}
-                </Typography>
-                <div className={classes.greyButton}>
-                  <span
-                    onClick={handleOpenUserModal}
-                    style={{ cursor: "pointer" }}
-                  >
-                    {i18n.t("mainDrawer.appBar.user.profile") || "Perfil"}
-                  </span>
+                <div className={classes.profileRow}>
+                  <Typography variant="subtitle2" style={{ fontWeight: 700 }}>
+                    {user?.company?.name || ""}
+                  </Typography>
+                  <Typography variant="body2" style={{ opacity: 0.9 }}>
+                    {" | "}{user?.name || ""}
+                  </Typography>
+                  <Tooltip title={i18n.t("mainDrawer.appBar.user.profile") || "Ver Perfil"}>
+                    <IconButton size="small" onClick={handleOpenUserModal}>
+                      <AccountCircle fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
                 </div>
               </Box>
-              <Divider />
 
-              {/* Selecione um Tema (radios) */}
-              <MenuItem dense disableGutters>
-                <div className={classes.menuBlock} style={{ width: "100%" }}>
-                  <FormControl component="fieldset" style={{ width: "100%" }}>
-                    <FormLabel component="legend" className={classes.sectionTitle}>
-                      {i18n.t("common.selectTheme") || "Selecione um Tema"}
-                    </FormLabel>
-                    <RadioGroup
-                      aria-label="theme"
-                      name="theme"
-                      value={theme.mode}
-                      onChange={handleThemeChange}
-                    >
-                      <FormControlLabel
-                        value="light"
-                        control={<Radio color="primary" />}
-                        label={i18n.t("common.lightMode") || "Light"}
-                      />
-                      <FormControlLabel
-                        value="dark"
-                        control={<Radio color="primary" />}
-                        label={i18n.t("common.darkMode") || "Dark"}
-                      />
-                    </RadioGroup>
-                  </FormControl>
-                </div>
-              </MenuItem>
+              <Divider className={classes.dividerDense} />
 
-              {/* Volume (radios) */}
-              <MenuItem dense disableGutters>
-                <div className={classes.menuBlock} style={{ width: "100%" }}>
-                  <FormControl component="fieldset" style={{ width: "100%" }}>
-                    <FormLabel component="legend" className={classes.sectionTitle}>
-                      {i18n.t("common.setVolume") || "Volume"}
-                    </FormLabel>
-                    <RadioGroup
-                      aria-label="volume"
-                      name="volume"
-                      value={volume ? "on" : "off"}
-                      onChange={handleVolumeChange}
-                    >
-                      <FormControlLabel
-                        value="on"
-                        control={<Radio color="primary" />}
-                        label={i18n.t("common.on") || "Ligado"}
-                      />
-                      <FormControlLabel
-                        value="off"
-                        control={<Radio color="primary" />}
-                        label={i18n.t("common.off") || "Desligado"}
-                      />
-                    </RadioGroup>
-                  </FormControl>
-                </div>
-              </MenuItem>
+              {/* 2: título tema */}
+              <Box className={classes.menuBlock} style={{ paddingBottom: 0 }}>
+                <Typography className={classes.sectionTitle}>
+                  {i18n.t("common.selectTheme") || "Selecione um Tema"}
+                </Typography>
+              </Box>
+              {/* 3: switch tema */}
+              <Box className={classes.menuBlock} style={{ paddingTop: 6 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      color="primary"
+                      checked={theme.mode === "dark"}
+                      onChange={handleThemeToggle}
+                    />
+                  }
+                  label={
+                    theme.mode === "dark"
+                      ? (i18n.t("common.darkMode") || "Dark")
+                      : (i18n.t("common.lightMode") || "Light")
+                  }
+                />
+              </Box>
 
-              {/* Idioma (mantém seu componente) */}
-              <MenuItem dense disableGutters>
-                <div className={classes.menuBlock} style={{ width: "100%" }}>
-                  <FormLabel component="legend" className={classes.sectionTitle}>
-                    {i18n.t("common.selectLanguage") || "Selecione um idioma"}
-                  </FormLabel>
-                  <div style={{ marginTop: 6 }}>
-                    <LanguageControl />
-                  </div>
-                </div>
-              </MenuItem>
+              {/* 4: título volume */}
+              <Box className={classes.menuBlock} style={{ paddingBottom: 0 }}>
+                <Typography className={classes.sectionTitle}>
+                  {i18n.t("common.setVolume") || "Volume"}
+                </Typography>
+              </Box>
+              {/* 5: switch volume */}
+              <Box className={classes.menuBlock} style={{ paddingTop: 6 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      color="primary"
+                      checked={!!volume}
+                      onChange={handleVolumeToggle}
+                    />
+                  }
+                  label={volume ? (i18n.t("common.on") || "Ligado")
+                                : (i18n.t("common.off") || "Desligado")}
+                />
+              </Box>
 
-              <Divider />
+              {/* 6: título idioma */}
+              <Divider className={classes.dividerDense} />
+              <Box className={classes.menuBlock} style={{ paddingBottom: 0 }}>
+                <Typography className={classes.sectionTitle}>
+                  {i18n.t("common.selectLanguage") || "Selecione um idioma"}
+                </Typography>
+              </Box>
+              {/* 7–9: radios idioma */}
+              <Box className={classes.menuBlock} style={{ paddingTop: 6 }}>
+                <LanguageControl />
+              </Box>
+
+              <Divider className={classes.dividerDense} />
+              {/* 10: sair */}
               <MenuItem onClick={handleClickLogout}>
                 {i18n.t("mainDrawer.appBar.user.logout")}
               </MenuItem>
