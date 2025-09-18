@@ -11,6 +11,11 @@ import { SocketContext, SocketManager } from './context/Socket/SocketContext';
 
 import Routes from "./routes";
 
+import "@fontsource/montserrat";        // 400
+import "@fontsource/montserrat/500.css";
+import "@fontsource/montserrat/600.css";
+import "@fontsource/montserrat/700.css";
+
 const queryClient = new QueryClient();
 
 const App = () => {
@@ -31,6 +36,16 @@ const App = () => {
 
     const theme = createTheme(
         {
+            typography: {
+                fontFamily: "Montserrat, Arial, sans-serif",
+                h1: { fontWeight: 700 },
+                h2: { fontWeight: 600 },
+                h3: { fontWeight: 600 },
+                h4: { fontWeight: 600 },
+                button: { textTransform: "none", fontWeight: 600 },
+                body1: { fontWeight: 400 },
+                body2: { fontWeight: 400 },
+            },
             scrollbarStyles: {
                 "&::-webkit-scrollbar": {
                     width: '8px',
