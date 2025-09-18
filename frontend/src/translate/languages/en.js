@@ -820,7 +820,7 @@ const messages = {
 				listItems: {
 					dashboard: "Dashboard",
 					connections: "Connections",
-					tickets: "Services",
+					tickets: "WhatsApp",
 					quickMessages: "Quick Responses",
 					tasks: "Tasks",
 					contacts: "Contacts",
@@ -840,6 +840,7 @@ const messages = {
 					files: "File List",
 					prompts: "IA Agentes",
 					queueIntegration: "Integrations",
+					ApiIntegration: 'APIs Integrations'
 				},
 				appBar: {
 					refresh: "Reload page",

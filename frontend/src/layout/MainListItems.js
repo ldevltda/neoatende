@@ -506,7 +506,7 @@ const MainListItems = (props) => {
             {showIntegrations && (
               <ListItemLink
                 to="/inventory"
-                primary="Integrações APIs"
+                primary={i18n.t("mainDrawer.listItems.ApiIntegration")}
                 icon={<ListIcon />}
               />
             )}
