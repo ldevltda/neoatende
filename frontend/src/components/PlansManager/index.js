@@ -262,7 +262,7 @@ export function PlanManagerForm(props) {
                         {/* OPENAI */}
                         <Grid xs={12} sm={8} md={2} item>
                             <FormControl margin="dense" variant="outlined" fullWidth>
-                                <InputLabel htmlFor="useOpenAi-selection">Agentes IA</InputLabel>
+                                <InputLabel htmlFor="useOpenAi-selection">Agentes de IA</InputLabel>
                                 <Field
                                     as={Select}
                                     id="useOpenAi-selection"
@@ -376,7 +376,7 @@ export function PlansManagerGrid(props) {
                         <TableCell align="center">{i18n.t("plans.form.internalChat")}</TableCell>
                         <TableCell align="center">{i18n.t("plans.form.externalApi")}</TableCell>
                         <TableCell align="center">{i18n.t("plans.form.kanban")}</TableCell>
-                        <TableCell align="center">Open.Ai</TableCell>
+                        <TableCell align="center">Agentes de IA</TableCell>
                         <TableCell align="center">{i18n.t("plans.form.integrations")}</TableCell>
                     </TableRow>
                 </TableHead>

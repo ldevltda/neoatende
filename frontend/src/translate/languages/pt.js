@@ -852,7 +852,7 @@ const messages = {
           chats: "Chat Interno",
           financeiro: "Financeiro",
           files: "Lista de arquivos",
-          prompts: "Open.Ai",
+          prompts: "Agentes de IA",
           queueIntegration: "Integrações",
         },
         appBar: {

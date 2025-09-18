@@ -836,7 +836,7 @@ const messages = {
 					chats: "Internal Chat",
 					financeiro: "Financial",
 					files: "File List",
-					prompts: "Open.AI",
+					prompts: "Agentes de IA",
 					queueIntegration: "Integrations",
 				},
 				appBar: {
