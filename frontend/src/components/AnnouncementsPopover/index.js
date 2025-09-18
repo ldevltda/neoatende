@@ -1,3 +1,4 @@
+// frontend/src/components/AnnouncementsPopover/index.js
 import React, { useEffect, useReducer, useState, useContext } from "react";
 import { makeStyles } from "@material-ui/core/styles";
 import toastError from "../../errors/toastError";
@@ -40,6 +41,7 @@ const useStyles = makeStyles((theme) => ({
 function AnnouncementDialog({ announcement, open, handleClose }) {
   const getMediaPath = (filename) =>
     `${process.env.REACT_APP_BACKEND_URL}/public/${filename}`;
+
   return (
     <Dialog open={open} onClose={() => handleClose()}>
       <DialogTitle>{announcement.title}</DialogTitle>
@@ -73,32 +75,39 @@ function AnnouncementDialog({ announcement, open, handleClose }) {
 const reducer = (state, action) => {
   if (action.type === "LOAD_ANNOUNCEMENTS") {
     const announcements = action.payload;
-    const newAnnouncements = [];
+    const newOnes = [];
     if (isArray(announcements)) {
       announcements.forEach((a) => {
         const idx = state.findIndex((u) => u.id === a.id);
         if (idx !== -1) state[idx] = a;
-        else newAnnouncements.push(a);
+        else newOnes.push(a);
       });
     }
-    return [...state, ...newAnnouncements];
+    return [...state, ...newOnes];
   }
+
   if (action.type === "UPDATE_ANNOUNCEMENTS") {
     const a = action.payload;
     const idx = state.findIndex((u) => u.id === a.id);
-    if (idx !== -1) { state[idx] = a; return [...state]; }
+    if (idx !== -1) {
+      state[idx] = a;
+      return [...state];
+    }
     return [a, ...state];
   }
+
   if (action.type === "DELETE_ANNOUNCEMENT") {
     const id = action.payload;
     const idx = state.findIndex((u) => u.id === id);
     if (idx !== -1) state.splice(idx, 1);
     return [...state];
   }
+
   if (action.type === "RESET") return [];
+  return state;
 };
 
-export default function AnnouncementsPopover({ iconColor }) {
+export default function AnnouncementsPopover({ iconColor = "white" }) {
   const classes = useStyles();
 
   const [loading, setLoading] = useState(false);
@@ -107,39 +116,46 @@ export default function AnnouncementsPopover({ iconColor }) {
   const [hasMore, setHasMore] = useState(false);
   const [searchParam] = useState("");
   const [announcements, dispatch] = useReducer(reducer, []);
-  const [invisible, setInvisible] = useState(false);
   const [announcement, setAnnouncement] = useState({});
   const [showAnnouncementDialog, setShowAnnouncementDialog] = useState(false);
 
   const socketManager = useContext(SocketContext);
 
+  // reset paginação quando termo muda
   useEffect(() => {
     dispatch({ type: "RESET" });
     setPageNumber(1);
   }, [searchParam]);
 
+  // busca paginada
   useEffect(() => {
     setLoading(true);
-    const t = setTimeout(() => { fetchAnnouncements(); }, 500);
+    const t = setTimeout(() => {
+      fetchAnnouncements();
+    }, 500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParam, pageNumber]);
 
+  // socket listeners
   useEffect(() => {
     const companyId = localStorage.getItem("companyId");
     const socket = socketManager.getSocket(companyId);
     if (!socket) return () => {};
 
-    socket.on(`company-announcement`, (data) => {
+    const channel = "company-announcement";
+    const handler = (data) => {
       if (data.action === "update" || data.action === "create") {
         dispatch({ type: "UPDATE_ANNOUNCEMENTS", payload: data.record });
-        setInvisible(false);
-      }
-      if (data.action === "delete") {
+      } else if (data.action === "delete") {
         dispatch({ type: "DELETE_ANNOUNCEMENT", payload: +data.id });
       }
-    });
-    return () => { socket.disconnect(); };
+    };
+
+    socket.on(channel, handler);
+    return () => {
+      socket.off(channel, handler); // remove só os listeners deste componente
+    };
   }, [socketManager]);
 
   const fetchAnnouncements = async () => {
@@ -163,18 +179,15 @@ export default function AnnouncementsPopover({ iconColor }) {
     if (scrollHeight - (scrollTop + 100) < clientHeight) loadMore();
   };
 
-  const handleClick = (event) => {
-    setAnchorEl(event.currentTarget);
-    setInvisible(true);
-  };
-
+  const handleClick = (event) => setAnchorEl(event.currentTarget);
   const handleClose = () => setAnchorEl(null);
 
   const borderPriority = (priority) => {
     if (priority === 1) return "4px solid #b81111";
     if (priority === 2) return "4px solid orange";
     if (priority === 3) return "4px solid grey";
-  };
+    return undefined;
+    };
 
   const getMediaPath = (filename) =>
     `${process.env.REACT_APP_BACKEND_URL}/public/${filename}`;
@@ -186,7 +199,7 @@ export default function AnnouncementsPopover({ iconColor }) {
   };
 
   const open = Boolean(anchorEl);
-  const id = open ? "simple-popover" : undefined;
+  const id = open ? "announcements-popover" : undefined;
 
   return (
     <div>
@@ -196,17 +209,18 @@ export default function AnnouncementsPopover({ iconColor }) {
         handleClose={() => setShowAnnouncementDialog(false)}
       />
 
+      {/* Ícone (branco por padrão) com badge visível apenas se houver itens */}
       <IconButton
         size="small"
         variant="contained"
         aria-describedby={id}
         onClick={handleClick}
-        style={iconColor ? { color: iconColor } : undefined}
+        style={{ color: iconColor }}
       >
         <Badge
           color="secondary"
-          variant="dot"
-          invisible={invisible || announcements.length < 1}
+          badgeContent={announcements.length}
+          invisible={announcements.length === 0}
         >
           <Notifications />
         </Badge>
@@ -220,12 +234,16 @@ export default function AnnouncementsPopover({ iconColor }) {
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
         transformOrigin={{ vertical: "top", horizontal: "center" }}
       >
-        <Paper variant="outlined" onScroll={handleScroll} className={classes.mainPaper}>
-          <List component="nav" aria-label="main mailbox folders" style={{ minWidth: 300 }}>
+        <Paper
+          variant="outlined"
+          onScroll={handleScroll}
+          className={classes.mainPaper}
+        >
+          <List component="nav" aria-label="announcements" style={{ minWidth: 300 }}>
             {isArray(announcements) &&
-              announcements.map((item, key) => (
+              announcements.map((item) => (
                 <ListItem
-                  key={key}
+                  key={item.id}
                   style={{
                     border: "1px solid #eee",
                     borderLeft: borderPriority(item.priority),
