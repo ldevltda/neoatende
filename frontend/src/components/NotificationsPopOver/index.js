@@ -211,7 +211,10 @@ const NotificationsPopOver = ({
       return [notification, ...prev];
     });
 
-    soundAlertRef.current?.();
+    // ✅ evita 'no-unused-expressions'
+    if (typeof soundAlertRef.current === "function") {
+      soundAlertRef.current();
+    }
   };
 
   const handleToggle = () => setIsOpen((p) => !p);
