@@ -6,7 +6,7 @@ WORKDIR /app
 # RUN npm config set registry https://registry.npmjs.org/
 
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
+RUN npm ci --legacy-peer-deps
 
 COPY frontend/ .
 # Se seu projeto usa a flag antiga do OpenSSL, remova do package.json e prefira react-scripts 5 ou Vite
