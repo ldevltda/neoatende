@@ -1,30 +1,31 @@
-// frontend/src/components/AnnouncementsPopover/index.js
 import React, { useEffect, useReducer, useState, useContext } from "react";
-import { makeStyles } from "@material-ui/core/styles";
-import toastError from "../../errors/toastError";
-import Popover from "@material-ui/core/Popover";
-import Notifications from "@mui/icons-material/Notifications";
-
 import {
   Avatar,
   Badge,
+  Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   IconButton,
   List,
   ListItem,
   ListItemAvatar,
   ListItemText,
-  Dialog,
   Paper,
+  Popover,
+  Tooltip,
   Typography,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  Button,
-  DialogContentText,
+  makeStyles,
 } from "@material-ui/core";
-import api from "../../services/api";
-import { isArray } from "lodash";
+import NotificationsIcon from "@mui/icons-material/Notifications";
+
 import moment from "moment";
+import { isArray } from "lodash";
+
+import api from "../../services/api";
+import toastError from "../../errors/toastError";
 import { SocketContext } from "../../context/Socket/SocketContext";
 
 const useStyles = makeStyles((theme) => ({
@@ -43,10 +44,10 @@ function AnnouncementDialog({ announcement, open, handleClose }) {
     `${process.env.REACT_APP_BACKEND_URL}/public/${filename}`;
 
   return (
-    <Dialog open={open} onClose={() => handleClose()}>
-      <DialogTitle>{announcement.title}</DialogTitle>
+    <Dialog open={open} onClose={handleClose}>
+      <DialogTitle>{announcement?.title}</DialogTitle>
       <DialogContent>
-        {announcement.mediaPath && (
+        {announcement?.mediaPath && (
           <div
             style={{
               border: "1px solid #f1f1f1",
@@ -61,10 +62,10 @@ function AnnouncementDialog({ announcement, open, handleClose }) {
             }}
           />
         )}
-        <DialogContentText>{announcement.text}</DialogContentText>
+        <DialogContentText>{announcement?.text}</DialogContentText>
       </DialogContent>
       <DialogActions>
-        <Button onClick={() => handleClose()} color="primary" autoFocus>
+        <Button onClick={handleClose} color="primary" autoFocus>
           Fechar
         </Button>
       </DialogActions>
@@ -74,18 +75,17 @@ function AnnouncementDialog({ announcement, open, handleClose }) {
 
 const reducer = (state, action) => {
   if (action.type === "LOAD_ANNOUNCEMENTS") {
-    const announcements = action.payload;
-    const newOnes = [];
-    if (isArray(announcements)) {
-      announcements.forEach((a) => {
+    const list = action.payload;
+    const add = [];
+    if (isArray(list)) {
+      list.forEach((a) => {
         const idx = state.findIndex((u) => u.id === a.id);
         if (idx !== -1) state[idx] = a;
-        else newOnes.push(a);
+        else add.push(a);
       });
     }
-    return [...state, ...newOnes];
+    return [...state, ...add];
   }
-
   if (action.type === "UPDATE_ANNOUNCEMENTS") {
     const a = action.payload;
     const idx = state.findIndex((u) => u.id === a.id);
@@ -95,73 +95,71 @@ const reducer = (state, action) => {
     }
     return [a, ...state];
   }
-
   if (action.type === "DELETE_ANNOUNCEMENT") {
     const id = action.payload;
     const idx = state.findIndex((u) => u.id === id);
     if (idx !== -1) state.splice(idx, 1);
     return [...state];
   }
-
   if (action.type === "RESET") return [];
   return state;
 };
 
-export default function AnnouncementsPopover({ iconColor = "white" }) {
+/**
+ * Avisos/broadcasts
+ * Props: iconColor, badgeColor, tooltip (todos opcionais)
+ */
+export default function AnnouncementsPopover({
+  iconColor,
+  badgeColor = "secondary",
+  tooltip = "Avisos",
+}) {
   const classes = useStyles();
 
-  const [loading, setLoading] = useState(false);
   const [anchorEl, setAnchorEl] = useState(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [hasMore, setHasMore] = useState(false);
-  const [searchParam] = useState("");
+  const [loading, setLoading] = useState(false);
   const [announcements, dispatch] = useReducer(reducer, []);
-  const [announcement, setAnnouncement] = useState({});
-  const [showAnnouncementDialog, setShowAnnouncementDialog] = useState(false);
+  const [announcement, setAnnouncement] = useState(null);
+  const [showDialog, setShowDialog] = useState(false);
 
   const socketManager = useContext(SocketContext);
 
-  // reset paginação quando termo muda
   useEffect(() => {
     dispatch({ type: "RESET" });
     setPageNumber(1);
-  }, [searchParam]);
+  }, []);
 
-  // busca paginada
   useEffect(() => {
     setLoading(true);
     const t = setTimeout(() => {
       fetchAnnouncements();
-    }, 500);
+    }, 300);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParam, pageNumber]);
+  }, [pageNumber]);
 
-  // socket listeners
   useEffect(() => {
     const companyId = localStorage.getItem("companyId");
     const socket = socketManager.getSocket(companyId);
     if (!socket) return () => {};
 
-    const channel = "company-announcement";
-    const handler = (data) => {
+    socket.on(`company-announcement`, (data) => {
       if (data.action === "update" || data.action === "create") {
         dispatch({ type: "UPDATE_ANNOUNCEMENTS", payload: data.record });
-      } else if (data.action === "delete") {
+      }
+      if (data.action === "delete") {
         dispatch({ type: "DELETE_ANNOUNCEMENT", payload: +data.id });
       }
-    };
-
-    socket.on(channel, handler);
-    return () => {
-      socket.off(channel, handler); // remove só os listeners deste componente
-    };
+    });
+    return () => socket.disconnect();
   }, [socketManager]);
 
   const fetchAnnouncements = async () => {
     try {
       const { data } = await api.get("/announcements/", {
-        params: { searchParam, pageNumber },
+        params: { pageNumber },
       });
       dispatch({ type: "LOAD_ANNOUNCEMENTS", payload: data.records });
       setHasMore(data.hasMore);
@@ -179,58 +177,42 @@ export default function AnnouncementsPopover({ iconColor = "white" }) {
     if (scrollHeight - (scrollTop + 100) < clientHeight) loadMore();
   };
 
-  const handleClick = (event) => setAnchorEl(event.currentTarget);
-  const handleClose = () => setAnchorEl(null);
-
-  const borderPriority = (priority) => {
-    if (priority === 1) return "4px solid #b81111";
-    if (priority === 2) return "4px solid orange";
-    if (priority === 3) return "4px solid grey";
-    return undefined;
-    };
-
-  const getMediaPath = (filename) =>
-    `${process.env.REACT_APP_BACKEND_URL}/public/${filename}`;
-
-  const handleShowAnnouncementDialog = (record) => {
-    setAnnouncement(record);
-    setShowAnnouncementDialog(true);
-    setAnchorEl(null);
-  };
-
   const open = Boolean(anchorEl);
-  const id = open ? "announcements-popover" : undefined;
+  const id = open ? "ann-popover" : undefined;
+  const count = announcements.length;
 
   return (
     <div>
       <AnnouncementDialog
         announcement={announcement}
-        open={showAnnouncementDialog}
-        handleClose={() => setShowAnnouncementDialog(false)}
+        open={showDialog}
+        handleClose={() => setShowDialog(false)}
       />
 
-      {/* Ícone (branco por padrão) com badge visível apenas se houver itens */}
-      <IconButton
-        size="small"
-        variant="contained"
-        aria-describedby={id}
-        onClick={handleClick}
-        style={{ color: iconColor }}
-      >
-        <Badge
-          color="secondary"
-          badgeContent={announcements.length}
-          invisible={announcements.length === 0}
+      <Tooltip arrow placement="bottom" title={tooltip}>
+        <IconButton
+          size="small"
+          aria-describedby={id}
+          onClick={(e) => setAnchorEl(e.currentTarget)}
+          color="inherit"
+          style={iconColor ? { color: iconColor } : undefined}
         >
-          <Notifications />
-        </Badge>
-      </IconButton>
+          <Badge
+            overlap="circular"
+            badgeContent={count}
+            color={badgeColor}
+            invisible={count === 0}
+          >
+            <NotificationsIcon />
+          </Badge>
+        </IconButton>
+      </Tooltip>
 
       <Popover
         id={id}
         open={open}
         anchorEl={anchorEl}
-        onClose={handleClose}
+        onClose={() => setAnchorEl(null)}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
         transformOrigin={{ vertical: "top", horizontal: "center" }}
       >
@@ -246,14 +228,26 @@ export default function AnnouncementsPopover({ iconColor = "white" }) {
                   key={item.id}
                   style={{
                     border: "1px solid #eee",
-                    borderLeft: borderPriority(item.priority),
+                    borderLeft:
+                      item.priority === 1
+                        ? "4px solid #b81111"
+                        : item.priority === 2
+                        ? "4px solid orange"
+                        : "4px solid grey",
                     cursor: "pointer",
                   }}
-                  onClick={() => handleShowAnnouncementDialog(item)}
+                  onClick={() => {
+                    setAnnouncement(item);
+                    setShowDialog(true);
+                    setAnchorEl(null);
+                  }}
                 >
                   {item.mediaPath && (
                     <ListItemAvatar>
-                      <Avatar alt={item.mediaName} src={getMediaPath(item.mediaPath)} />
+                      <Avatar
+                        alt={item.mediaName}
+                        src={`${process.env.REACT_APP_BACKEND_URL}/public/${item.mediaPath}`}
+                      />
                     </ListItemAvatar>
                   )}
                   <ListItemText
