@@ -346,7 +346,7 @@ const LoggedInLayout = ({ children }) => {
                     </IconButton>
                   </Tooltip>
 
-                  <span className={classes.rowSpacer} />
+                  {/* <span className={classes.rowSpacer} /> */}
 
                   {/* Ícones no padrão do perfil */}
                   <div className={classes.inlineActions}>
