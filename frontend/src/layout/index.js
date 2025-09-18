@@ -15,15 +15,17 @@ import {
   useTheme,
   useMediaQuery,
 } from "@material-ui/core";
+import Tooltip from "@material-ui/core/Tooltip";
 
 // ===== ÍCONES (Material v5) =====
 import MenuIcon from "@mui/icons-material/Menu";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import AccountCircle from "@mui/icons-material/AccountCircle";
-import CachedIcon from "@mui/icons-material/Cached";
 import Brightness4Icon from "@mui/icons-material/Brightness4";
 import Brightness7Icon from "@mui/icons-material/Brightness7";
-import LanguageOutlined from "@mui/icons-material/LanguageOutlined";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
+import TranslateIcon from "@mui/icons-material/Translate";
+import RefreshOutlinedIcon from "@mui/icons-material/RefreshOutlined";
 // ================================
 
 import MainListItems from "./MainListItems";
@@ -56,21 +58,20 @@ const useStyles = makeStyles((theme) => ({
       height: "calc(100vh - 56px)",
     },
     backgroundColor: theme.palette.fancyBackground,
-    '& .MuiButton-outlinedPrimary': {
-      color: theme.mode === 'light' ? '#FFF' : '#FFF',
-	  //backgroundColor: theme.mode === 'light' ? '#682ee2' : '#682ee2',
-	backgroundColor: theme.mode === 'light' ? theme.palette.primary.main : '#1c1c1c',
-      //border: theme.mode === 'light' ? '1px solid rgba(0 124 102)' : '1px solid rgba(255, 255, 255, 0.5)',
+    "& .MuiButton-outlinedPrimary": {
+      color: theme.mode === "light" ? "#FFF" : "#FFF",
+      backgroundColor:
+        theme.mode === "light" ? theme.palette.primary.main : "#1c1c1c",
     },
-    '& .MuiTab-textColorPrimary.Mui-selected': {
-      color: theme.mode === 'light' ? 'Primary' : '#FFF',
-    }
+    "& .MuiTab-textColorPrimary.Mui-selected": {
+      color: theme.mode === "light" ? "Primary" : "#FFF",
+    },
   },
   avatar: {
     width: "100%",
   },
   toolbar: {
-    paddingRight: 24, // keep right padding when drawer closed
+    paddingRight: 24,
     color: theme.palette.dark.main,
     background: theme.palette.barraSuperior,
   },
@@ -81,8 +82,8 @@ const useStyles = makeStyles((theme) => ({
     padding: "0 8px",
     minHeight: "48px",
     [theme.breakpoints.down("sm")]: {
-      height: "48px"
-    }
+      height: "48px",
+    },
   },
   appBar: {
     zIndex: theme.zIndex.drawer + 1,
@@ -99,17 +100,17 @@ const useStyles = makeStyles((theme) => ({
       duration: theme.transitions.duration.enteringScreen,
     }),
     [theme.breakpoints.down("sm")]: {
-      display: "none"
-    }
+      display: "none",
+    },
   },
   menuButton: {
     marginRight: 36,
-    color: "#FFFFFF",                 // cor do ícone/botão
-    backgroundColor: "transparent",   // opcional
+    color: "#FFFFFF",
+    backgroundColor: "transparent",
     "&:hover": {
-      color: "#9FE870",               // cor ao passar o mouse
-      backgroundColor: "rgba(255,255,255,0.08)" // opcional, leve highlight
-    }
+      color: "#9FE870",
+      backgroundColor: "rgba(255,255,255,0.08)",
+    },
   },
   menuButtonHidden: {
     display: "none",
@@ -128,9 +129,9 @@ const useStyles = makeStyles((theme) => ({
       duration: theme.transitions.duration.enteringScreen,
     }),
     [theme.breakpoints.down("sm")]: {
-      width: "100%"
+      width: "100%",
     },
-    ...theme.scrollbarStylesSoft
+    ...theme.scrollbarStylesSoft,
   },
   drawerPaperClose: {
     overflowX: "hidden",
@@ -143,8 +144,8 @@ const useStyles = makeStyles((theme) => ({
       width: theme.spacing(9),
     },
     [theme.breakpoints.down("sm")]: {
-      width: "100%"
-    }
+      width: "100%",
+    },
   },
   appBarSpacer: {
     minHeight: "48px",
@@ -152,7 +153,6 @@ const useStyles = makeStyles((theme) => ({
   content: {
     flex: 1,
     overflow: "auto",
-
   },
   container: {
     paddingTop: theme.spacing(4),
@@ -162,16 +162,13 @@ const useStyles = makeStyles((theme) => ({
     padding: theme.spacing(2),
     display: "flex",
     overflow: "auto",
-    flexDirection: "column"
+    flexDirection: "column",
   },
   containerWithScroll: {
     flex: 1,
     padding: theme.spacing(1),
     overflowY: "scroll",
     ...theme.scrollbarStyles,
-  },
-  NotificationsPopOver: {
-    // color: theme.barraSuperior.secondary.main,
   },
   logo: {
     width: "80%",
@@ -182,7 +179,14 @@ const useStyles = makeStyles((theme) => ({
       height: "80%",
       maxWidth: 180,
     },
-    logo: theme.logo
+    logo: theme.logo,
+  },
+  // ---- melhorias no header (espaçamento consistente) ----
+  actionsRight: {
+    marginLeft: "auto",
+    display: "flex",
+    alignItems: "center",
+    gap: 8, // espaçamento entre ícones
   },
 }));
 
@@ -194,7 +198,6 @@ const LoggedInLayout = ({ children, themeToggle }) => {
   const { handleLogout, loading } = useContext(AuthContext);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerVariant, setDrawerVariant] = useState("permanent");
-  // const [dueDate, setDueDate] = useState("");
   const { user } = useContext(AuthContext);
 
   const theme = useTheme();
@@ -205,57 +208,11 @@ const LoggedInLayout = ({ children, themeToggle }) => {
 
   const { dateToClient } = useDate();
 
-  // Languages
-  const [anchorElLanguage, setAnchorElLanguage] = useState(null);
-  const [menuLanguageOpen, setMenuLanguageOpen] = useState(false);
-
-
-  //################### CODIGOS DE TESTE #########################################
-  // useEffect(() => {
-  //   navigator.getBattery().then((battery) => {
-  //     console.log(`Battery Charging: ${battery.charging}`);
-  //     console.log(`Battery Level: ${battery.level * 100}%`);
-  //     console.log(`Charging Time: ${battery.chargingTime}`);
-  //     console.log(`Discharging Time: ${battery.dischargingTime}`);
-  //   })
-  // }, []);
-
-  // useEffect(() => {
-  //   const geoLocation = navigator.geolocation
-
-  //   geoLocation.getCurrentPosition((position) => {
-  //     let lat = position.coords.latitude;
-  //     let long = position.coords.longitude;
-
-  //     console.log('latitude: ', lat)
-  //     console.log('longitude: ', long)
-  //   })
-  // }, []);
-
-  // useEffect(() => {
-  //   const nucleos = window.navigator.hardwareConcurrency;
-
-  //   console.log('Nucleos: ', nucleos)
-  // }, []);
-
-  // useEffect(() => {
-  //   console.log('userAgent', navigator.userAgent)
-  //   if (
-  //     navigator.userAgent.match(/Android/i)
-  //     || navigator.userAgent.match(/webOS/i)
-  //     || navigator.userAgent.match(/iPhone/i)
-  //     || navigator.userAgent.match(/iPad/i)
-  //     || navigator.userAgent.match(/iPod/i)
-  //     || navigator.userAgent.match(/BlackBerry/i)
-  //     || navigator.userAgent.match(/Windows Phone/i)
-  //   ) {
-  //     console.log('é mobile ', true) //celular
-  //   }
-  //   else {
-  //     console.log('não é mobile: ', false) //nao é celular
-  //   }
-  // }, []);
-  //##############################################################################
+  // Menu "Mais ações"
+  const [moreAnchor, setMoreAnchor] = useState(null);
+  const moreOpen = Boolean(moreAnchor);
+  const handleOpenMore = (e) => setMoreAnchor(e.currentTarget);
+  const handleCloseMore = () => setMoreAnchor(null);
 
   const socketManager = useContext(SocketContext);
 
@@ -305,20 +262,10 @@ const LoggedInLayout = ({ children, themeToggle }) => {
     setMenuOpen(true);
   };
 
-  const handlemenuLanguage = ( event ) => {
-    setAnchorElLanguage(event.currentTarget);
-    setMenuLanguageOpen( true );
-  }
-
   const handleCloseMenu = () => {
     setAnchorEl(null);
     setMenuOpen(false);
   };
-
-  const handleCloseMenuLanguage = (  ) => {
-    setAnchorElLanguage(null);
-    setMenuLanguageOpen(false);
-  }
 
   const handleOpenUserModal = () => {
     setUserModalOpen(true);
@@ -338,7 +285,7 @@ const LoggedInLayout = ({ children, themeToggle }) => {
 
   const handleRefreshPage = () => {
     window.location.reload(false);
-  }
+  };
 
   const handleMenuItemClick = () => {
     const { innerWidth: width } = window;
@@ -349,7 +296,7 @@ const LoggedInLayout = ({ children, themeToggle }) => {
 
   const toggleColorMode = () => {
     colorMode.toggleColorMode();
-  }
+  };
 
   if (loading) {
     return <BackdropLoading />;
@@ -380,11 +327,13 @@ const LoggedInLayout = ({ children, themeToggle }) => {
         </List>
         <Divider />
       </Drawer>
+
       <UserModal
         open={userModalOpen}
         onClose={() => setUserModalOpen(false)}
         userId={user?.id}
       />
+
       <AppBar
         position="absolute"
         className={clsx(classes.appBar, drawerOpen && classes.appBarShift)}
@@ -411,112 +360,144 @@ const LoggedInLayout = ({ children, themeToggle }) => {
             noWrap
             className={classes.title}
           >
-            {/* {greaterThenSm && user?.profile === "admin" && getDateAndDifDays(user?.company?.dueDate).difData < 7 ? ( */}
             {greaterThenSm && user?.profile === "admin" && user?.company?.dueDate ? (
               <>
-                {i18n.t("mainDrawer.appBar.greeting.hello")} <b>{user.name}</b>, {i18n.t("mainDrawer.appBar.greeting.welcome")} <b>{user?.company?.name}</b>! ({i18n.t("mainDrawer.appBar.greeting.active")} {dateToClient(user?.company?.dueDate)})
+                {i18n.t("mainDrawer.appBar.greeting.hello")} <b>{user.name}</b>,{" "}
+                {i18n.t("mainDrawer.appBar.greeting.welcome")}{" "}
+                <b>{user?.company?.name}</b>! (
+                {i18n.t("mainDrawer.appBar.greeting.active")}{" "}
+                {dateToClient(user?.company?.dueDate)})
               </>
             ) : (
               <>
-                {i18n.t("mainDrawer.appBar.greeting.hello")} <b>{user.name}</b>, {i18n.t("mainDrawer.appBar.greeting.welcome")} <b>{user?.company?.name}</b>!
+                {i18n.t("mainDrawer.appBar.greeting.hello")} <b>{user.name}</b>,{" "}
+                {i18n.t("mainDrawer.appBar.greeting.welcome")}{" "}
+                <b>{user?.company?.name}</b>!
               </>
             )}
           </Typography>
-          
-          <div>
-            <IconButton edge="start">
-              <LanguageOutlined
+
+          {/* ---- ações à direita, mais limpas ---- */}
+          <div className={classes.actionsRight}>
+            {/* Notificações */}
+            <Tooltip title={i18n.t("notifications.title") || "Notificações"}>
+              <div>
+                {user.id && <NotificationsPopOver volume={volume} />}
+              </div>
+            </Tooltip>
+
+            {/* Chat interno */}
+            <Tooltip title={i18n.t("chat.title") || "Chat interno"}>
+              <div>
+                <ChatPopover />
+              </div>
+            </Tooltip>
+
+            {/* Controle de volume (manteve ícone/UX original) */}
+            <Tooltip title={i18n.t("notifications.volume") || "Volume"}>
+              <div>
+                <NotificationsVolume setVolume={setVolume} volume={volume} />
+              </div>
+            </Tooltip>
+
+            {/* Anúncios / comunicados */}
+            <Tooltip title={i18n.t("announcements.title") || "Comunicados"}>
+              <div>
+                <AnnouncementsPopover />
+              </div>
+            </Tooltip>
+
+            {/* Tema claro/escuro */}
+            <Tooltip
+              title={
+                theme.mode === "dark"
+                  ? i18n.t("common.lightMode") || "Tema claro"
+                  : i18n.t("common.darkMode") || "Tema escuro"
+              }
+            >
+              <IconButton edge="start" onClick={toggleColorMode}>
+                {theme.mode === "dark" ? (
+                  <Brightness7Icon style={{ color: "white" }} />
+                ) : (
+                  <Brightness4Icon style={{ color: "white" }} />
+                )}
+              </IconButton>
+            </Tooltip>
+
+            {/* Menu "Mais ações": Idioma + Atualizar */}
+            <Tooltip title={i18n.t("common.more") || "Mais ações"}>
+              <IconButton color="inherit" onClick={handleOpenMore}>
+                <MoreVertIcon />
+              </IconButton>
+            </Tooltip>
+            <Menu
+              anchorEl={moreAnchor}
+              keepMounted
+              open={moreOpen}
+              onClose={handleCloseMore}
+              getContentAnchorEl={null}
+              anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+              transformOrigin={{ vertical: "top", horizontal: "right" }}
+            >
+              <MenuItem disableGutters>
+                <div style={{ display: "flex", alignItems: "center", padding: "6px 16px", width: "100%" }}>
+                  <TranslateIcon style={{ marginRight: 12 }} />
+                  <LanguageControl />
+                </div>
+              </MenuItem>
+
+              <MenuItem
+                onClick={() => {
+                  handleCloseMore();
+                  handleRefreshPage();
+                }}
+              >
+                <RefreshOutlinedIcon style={{ marginRight: 12 }} />
+                {i18n.t("mainDrawer.appBar.refresh") || "Atualizar"}
+              </MenuItem>
+            </Menu>
+
+            {/* Perfil */}
+            <div>
+              <IconButton
                 aria-label="account of current user"
                 aria-controls="menu-appbar"
                 aria-haspopup="true"
-                onClick={handlemenuLanguage}
+                onClick={handleMenu}
                 variant="contained"
-                style={{ color: "white",marginRight:10 }}
-              />
-            </IconButton>
-            <Menu
-              id="menu-appbar-language"
-              anchorEl={anchorElLanguage}
-              getContentAnchorEl={null}
-              anchorOrigin={{
-                vertical: "bottom",
-                horizontal: "right",
-              }}
-              transformOrigin={{
-                vertical: "top",
-                horizontal: "right",
-              }}
-              open={menuLanguageOpen}
-              onClose={handleCloseMenuLanguage}
-            >
-              <MenuItem>
-                <LanguageControl />
-              </MenuItem>
-            </Menu>
-          </div>          
-
-          <IconButton edge="start" onClick={toggleColorMode}>
-            {theme.mode === 'dark' ? <Brightness7Icon style={{ color: "white" }} /> : <Brightness4Icon style={{ color: "white" }} />}
-          </IconButton>
-
-          <NotificationsVolume
-            setVolume={setVolume}
-            volume={volume}
-          />
-
-          <IconButton
-            onClick={handleRefreshPage}
-            aria-label={i18n.t("mainDrawer.appBar.refresh")}
-            color="inherit"
-          >
-            <CachedIcon style={{ color: "white" }} />
-          </IconButton>
-
-          {user.id && <NotificationsPopOver volume={volume} />}
-
-          <AnnouncementsPopover />
-
-          <ChatPopover />
-
-          <div>
-            <IconButton
-              aria-label="account of current user"
-              aria-controls="menu-appbar"
-              aria-haspopup="true"
-              onClick={handleMenu}
-              variant="contained"
-              style={{ color: "white" }}
-            >
-              <AccountCircle />
-            </IconButton>
-            <Menu
-              id="menu-appbar"
-              anchorEl={anchorEl}
-              getContentAnchorEl={null}
-              anchorOrigin={{
-                vertical: "bottom",
-                horizontal: "right",
-              }}
-              transformOrigin={{
-                vertical: "top",
-                horizontal: "right",
-              }}
-              open={menuOpen}
-              onClose={handleCloseMenu}
-            >
-              <MenuItem onClick={handleOpenUserModal}>
-                {i18n.t("mainDrawer.appBar.user.profile")}
-              </MenuItem>
-              <MenuItem onClick={handleClickLogout}>
-                {i18n.t("mainDrawer.appBar.user.logout")}
-              </MenuItem>
-            </Menu>
+                style={{ color: "white" }}
+              >
+                <AccountCircle />
+              </IconButton>
+              <Menu
+                id="menu-appbar"
+                anchorEl={anchorEl}
+                getContentAnchorEl={null}
+                anchorOrigin={{
+                  vertical: "bottom",
+                  horizontal: "right",
+                }}
+                transformOrigin={{
+                  vertical: "top",
+                  horizontal: "right",
+                }}
+                open={menuOpen}
+                onClose={handleCloseMenu}
+              >
+                <MenuItem onClick={handleOpenUserModal}>
+                  {i18n.t("mainDrawer.appBar.user.profile")}
+                </MenuItem>
+                <MenuItem onClick={handleClickLogout}>
+                  {i18n.t("mainDrawer.appBar.user.logout")}
+                </MenuItem>
+              </Menu>
+            </div>
           </div>
         </Toolbar>
       </AppBar>
+
       <main className={classes.content}>
         <div className={classes.appBarSpacer} />
-
         {children ? children : null}
       </main>
     </div>
