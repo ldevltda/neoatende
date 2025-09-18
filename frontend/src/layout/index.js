@@ -70,8 +70,8 @@ const useStyles = makeStyles((theme) => ({
       marginLeft: 0,
       marginRight: 0,
     },
-    "& .MuiFormLabel-root": {
-      display: "none",   // esconde só o label (que é "Selecione um idioma")
+    "& legend, & .MuiFormLabel-root": {
+      display: "none !important",   // esconde só o label (que é "Selecione um idioma")
     },
   },
   appBar: {
