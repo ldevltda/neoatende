@@ -19,11 +19,9 @@ import {
   FormControlLabel,
 } from "@material-ui/core";
 
-// ===== ÍCONES (Material v5) =====
 import MenuIcon from "@mui/icons-material/Menu";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import AccountCircle from "@mui/icons-material/AccountCircle";
-// ================================
 
 import MainListItems from "./MainListItems";
 import NotificationsPopOver from "../components/NotificationsPopOver";
@@ -63,7 +61,6 @@ const useStyles = makeStyles((theme) => ({
     [theme.breakpoints.down("sm")]: { height: "48px" },
   },
 
-  // idioma (LanguageControl) em coluna e sem o label interno
   langColumn: {
     "& .MuiFormGroup-root": { flexDirection: "column" },
     "& .MuiFormControlLabel-root": { marginLeft: 0, marginRight: 0 },
@@ -139,7 +136,6 @@ const useStyles = makeStyles((theme) => ({
     logo: theme.logo,
   },
 
-  // Menu do avatar
   menuBlock: { padding: "6px 16px" },
   sectionTitle: { fontSize: 12, opacity: 0.7, marginBottom: 6 },
   profileRow: {
@@ -149,11 +145,24 @@ const useStyles = makeStyles((theme) => ({
     flexWrap: "nowrap",
   },
   rowSpacer: { flex: 1 },
+
+  // 🔧 deixa os ícones no padrão do perfil
   inlineActions: {
     display: "flex",
     alignItems: "center",
-    gap: 8,
+    gap: 4,
+    "& .MuiIconButton-root": {
+      padding: 6,                          // compacto
+      color: theme.palette.text.secondary, // mesma cor do texto secundário
+    },
+    "& .MuiSvgIcon-root": {
+      fontSize: 20,                        // mesmo tamanho do ícone pequeno do perfil
+    },
+    "& .MuiBadge-badge": {
+      transform: "scale(0.85) translate(20%, -20%)", // badge discreto
+    },
   },
+
   dividerDense: { margin: "0" },
 }));
 
@@ -173,7 +182,6 @@ const LoggedInLayout = ({ children }) => {
 
   const socketManager = useContext(SocketContext);
 
-  // volume 0/1 no localStorage
   const [volume, setVolume] = useState(
     Number(localStorage.getItem("volume") || 1)
   );
@@ -234,14 +242,12 @@ const LoggedInLayout = ({ children }) => {
     if (document.body.offsetWidth < 600) setDrawerOpen(false);
   };
 
-  // Switch de tema
   const handleThemeToggle = (e) => {
-    const wantsDark = e.target.checked; // checked => Dark
+    const wantsDark = e.target.checked;
     const isDark = theme.mode === "dark";
     if (wantsDark !== isDark) colorMode.toggleColorMode();
   };
 
-  // Switch de volume
   const handleVolumeToggle = (e) => {
     const on = e.target.checked;
     setVolumeAndPersist(on ? 1 : 0);
@@ -264,7 +270,7 @@ const LoggedInLayout = ({ children }) => {
       >
         <div className={classes.toolbarIcon}>
           <img src={logo} className={classes.logo} alt="logo" />
-          <IconButton onClick={() => setDrawerOpen(!drawerOpen)}>
+        <IconButton onClick={() => setDrawerOpen(!drawerOpen)}>
             <ChevronLeftIcon />
           </IconButton>
         </div>
@@ -300,10 +306,9 @@ const LoggedInLayout = ({ children }) => {
             <MenuIcon />
           </IconButton>
 
-          {/* Header sem textos */}
           <div className={classes.titleSpacer} />
 
-          {/* Apenas o botão do perfil abre o menu (os outros ícones foram movidos para dentro do menu) */}
+          {/* Só o botão do perfil no header */}
           <div>
             <IconButton
               aria-label="account of current user"
@@ -325,7 +330,7 @@ const LoggedInLayout = ({ children }) => {
               open={menuOpen}
               onClose={handleCloseMenu}
             >
-              {/* 1ª linha: Empresa | Usuário + ícone Perfil + (chat/avisos/notificações) */}
+              {/* Topo do menu: empresa | usuário + ações compactas */}
               <Box className={classes.menuBlock}>
                 <div className={classes.profileRow}>
                   <Typography variant="subtitle2" style={{ fontWeight: 700, fontSize: "1rem" }}>
@@ -343,13 +348,16 @@ const LoggedInLayout = ({ children }) => {
 
                   <span className={classes.rowSpacer} />
 
-                  {/* ÍCONES AGRUPADOS DENTRO DO MESMO MENU */}
+                  {/* Ícones no padrão do perfil */}
                   <div className={classes.inlineActions}>
+                    {/* ChatPopover já usa IconButton; não força cor aqui */}
                     <ChatPopover />
-                    <AnnouncementsPopover iconColor={theme.palette.text.primary} />
+
+                    {/* Sino (Avisos) e Mensagens (Tickets) com cor do texto secundário */}
+                    <AnnouncementsPopover iconColor={undefined} />
                     <NotificationsPopOver
                       volume={volume}
-                      iconColor={theme.palette.text.primary}
+                      iconColor={undefined}
                     />
                   </div>
                 </div>
@@ -357,7 +365,7 @@ const LoggedInLayout = ({ children }) => {
 
               <Divider className={classes.dividerDense} />
 
-              {/* TEMA */}
+              {/* Tema */}
               <Box className={classes.menuBlock} style={{ paddingBottom: 0 }}>
                 <Typography className={classes.sectionTitle}>
                   {i18n.t("selectTheme") || "Selecione o tema"}
@@ -378,7 +386,7 @@ const LoggedInLayout = ({ children }) => {
 
               <Divider className={classes.dividerDense} />
 
-              {/* VOLUME */}
+              {/* Volume */}
               <Box className={classes.menuBlock} style={{ paddingBottom: 0 }}>
                 <Typography className={classes.sectionTitle}>
                   {i18n.t("setVolume") || "Volume"}
@@ -390,14 +398,14 @@ const LoggedInLayout = ({ children }) => {
                     <Switch
                       color="primary"
                       checked={!!volume}
-                      onChange={(e) => setVolumeAndPersist(e.target.checked ? 1 : 0)}
+                      onChange={handleVolumeToggle}
                     />
                   }
                   label={volume ? "Ligado" : "Desligado"}
                 />
               </Box>
 
-              {/* IDIOMA */}
+              {/* Idioma */}
               <Divider className={classes.dividerDense} />
               <Box className={classes.menuBlock} style={{ paddingBottom: 0 }}>
                 <Typography className={classes.sectionTitle}>

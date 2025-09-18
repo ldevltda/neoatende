@@ -1,292 +1,216 @@
-import React, { useEffect, useReducer, useState, useContext } from "react";
-import { makeStyles } from "@material-ui/core/styles";
-import toastError from "../../errors/toastError";
-import Popover from "@material-ui/core/Popover";
-import AnnouncementIcon from "@mui/icons-material/Announcement";
-import Notifications from "@mui/icons-material/Notifications";
-
-import {
-  Avatar,
-  Badge,
-  IconButton,
-  List,
-  ListItem,
-  ListItemAvatar,
-  ListItemText,
-  Dialog,
-  Paper,
-  Typography,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  Button,
-  DialogContentText,
-} from "@material-ui/core";
-import api from "../../services/api";
-import { isArray } from "lodash";
-import moment from "moment";
+import React, { useState, useRef, useEffect, useContext } from "react";
+import { useHistory } from "react-router-dom";
+import { format } from "date-fns";
 import { SocketContext } from "../../context/Socket/SocketContext";
+import useSound from "use-sound";
 
-const useStyles = makeStyles((theme) => ({
-  mainPaper: {
-    flex: 1,
-    maxHeight: 3000,
-    maxWidth: 5000,
-    padding: theme.spacing(1),
-    overflowY: "scroll",
+import Popover from "@material-ui/core/Popover";
+import IconButton from "@material-ui/core/IconButton";
+import List from "@material-ui/core/List";
+import ListItem from "@material-ui/core/ListItem";
+import ListItemText from "@material-ui/core/ListItemText";
+import { makeStyles } from "@material-ui/core/styles";
+import Badge from "@material-ui/core/Badge";
+import ChatIcon from "@mui/icons-material/Chat";
+
+import TicketListItem from "../TicketListItemCustom";
+import useTickets from "../../hooks/useTickets";
+import alertSound from "../../assets/sound.mp3";
+import { AuthContext } from "../../context/Auth/AuthContext";
+import { i18n } from "../../translate/i18n";
+import toastError from "../../errors/toastError";
+
+const useStyles = makeStyles(theme => ({
+  tabContainer: {
+    overflowY: "auto",
+    maxHeight: 350,
     ...theme.scrollbarStyles,
   },
+  popoverPaper: {
+    width: "100%",
+    maxWidth: 350,
+    marginLeft: theme.spacing(2),
+    marginRight: theme.spacing(1),
+    [theme.breakpoints.down("sm")]: { maxWidth: 270 },
+  },
+  noShadow: { boxShadow: "none !important" },
 }));
 
-function AnnouncementDialog({ announcement, open, handleClose }) {
-  const getMediaPath = (filename) => {
-    return `${process.env.REACT_APP_BACKEND_URL}/public/${filename}`;
-  };
-  return (
-    <Dialog
-      open={open}
-      onClose={() => handleClose()}
-      aria-labelledby="alert-dialog-title"
-      aria-describedby="alert-dialog-description"
-    >
-      <DialogTitle id="alert-dialog-title">{announcement.title}</DialogTitle>
-      <DialogContent>
-        {announcement.mediaPath && (
-          <div
-            style={{
-              border: "1px solid #f1f1f1",
-              margin: "0 auto 20px",
-              textAlign: "center",
-              width: "400px",
-              height: 300,
-              backgroundImage: `url(${getMediaPath(announcement.mediaPath)})`,
-              backgroundRepeat: "no-repeat",
-              backgroundSize: "contain",
-              backgroundPosition: "center",
-            }}
-          ></div>
-        )}
-        <DialogContentText id="alert-dialog-description">
-          {announcement.text}
-        </DialogContentText>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={() => handleClose()} color="primary" autoFocus>
-          Fechar
-        </Button>
-      </DialogActions>
-    </Dialog>
-  );
-}
-
-const reducer = (state, action) => {
-  if (action.type === "LOAD_ANNOUNCEMENTS") {
-    const announcements = action.payload;
-    const newAnnouncements = [];
-
-    if (isArray(announcements)) {
-      announcements.forEach((announcement) => {
-        const announcementIndex = state.findIndex(
-          (u) => u.id === announcement.id
-        );
-        if (announcementIndex !== -1) {
-          state[announcementIndex] = announcement;
-        } else {
-          newAnnouncements.push(announcement);
-        }
-      });
-    }
-    return [...state, ...newAnnouncements];
-  }
-
-  if (action.type === "UPDATE_ANNOUNCEMENTS") {
-    const announcement = action.payload;
-    const announcementIndex = state.findIndex((u) => u.id === announcement.id);
-    if (announcementIndex !== -1) {
-      state[announcementIndex] = announcement;
-      return [...state];
-    } else {
-      return [announcement, ...state];
-    }
-  }
-
-  if (action.type === "DELETE_ANNOUNCEMENT") {
-    const announcementId = action.payload;
-    const announcementIndex = state.findIndex((u) => u.id === announcementId);
-    if (announcementIndex !== -1) {
-      state.splice(announcementIndex, 1);
-    }
-    return [...state];
-  }
-
-  if (action.type === "RESET") return [];
-};
-
-export default function AnnouncementsPopover({ iconColor }) {
+// ⬇ aceita { volume, iconColor } – não força branco se não for passado
+const NotificationsPopOver = ({ volume, iconColor }) => {
   const classes = useStyles();
 
-  const [loading, setLoading] = useState(false);
-  const [anchorEl, setAnchorEl] = useState(null);
-  const [pageNumber, setPageNumber] = useState(1);
-  const [hasMore, setHasMore] = useState(false);
-  const [searchParam] = useState("");
-  const [announcements, dispatch] = useReducer(reducer, []);
-  const [invisible, setInvisible] = useState(false);
-  const [announcement, setAnnouncement] = useState({});
-  const [showAnnouncementDialog, setShowAnnouncementDialog] = useState(false);
+  const history = useHistory();
+  const { user } = useContext(AuthContext);
+  const ticketIdUrl = +history.location.pathname.split("/")[2];
+  const ticketIdRef = useRef(ticketIdUrl);
+  const anchorEl = useRef();
+  const [isOpen, setIsOpen] = useState(false);
+  const [notifications, setNotifications] = useState([]);
 
+  const [showPendingTickets, setShowPendingTickets] = useState(false);
+  const [, setDesktopNotifications] = useState([]);
+
+  const { tickets } = useTickets({ withUnreadMessages: "true" });
+
+  const [play] = useSound(alertSound, volume);
+  const soundAlertRef = useRef();
+  const historyRef = useRef(history);
   const socketManager = useContext(SocketContext);
 
   useEffect(() => {
-    dispatch({ type: "RESET" });
-    setPageNumber(1);
-  }, [searchParam]);
-
-  useEffect(() => {
-    setLoading(true);
-    const delayDebounceFn = setTimeout(() => {
-      fetchAnnouncements();
-    }, 500);
-    return () => clearTimeout(delayDebounceFn);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParam, pageNumber]);
-
-  useEffect(() => {
-    const companyId = localStorage.getItem("companyId");
-    const socket = socketManager.getSocket(companyId);
-    if (!socket) return () => {};
-
-    socket.on(`company-announcement`, (data) => {
-      if (data.action === "update" || data.action === "create") {
-        dispatch({ type: "UPDATE_ANNOUNCEMENTS", payload: data.record });
-        setInvisible(false);
+    const fetchSettings = async () => {
+      try {
+        if (user.allTicket === "enable") setShowPendingTickets(true);
+      } catch (err) {
+        toastError(err);
       }
-      if (data.action === "delete") {
-        dispatch({ type: "DELETE_ANNOUNCEMENT", payload: +data.id });
+    };
+    fetchSettings();
+  }, [user]);
+
+  useEffect(() => {
+    soundAlertRef.current = play;
+    if (!("Notification" in window)) {
+      console.log("This browser doesn't support notifications");
+    } else {
+      Notification.requestPermission();
+    }
+  }, [play]);
+
+  useEffect(() => {
+    if (showPendingTickets) setNotifications(tickets);
+    else setNotifications(tickets.filter((t) => t.status !== "pending"));
+  }, [tickets, showPendingTickets]);
+
+  useEffect(() => { ticketIdRef.current = ticketIdUrl; }, [ticketIdUrl]);
+
+  useEffect(() => {
+    const socket = socketManager.getSocket(user.companyId);
+
+    socket.on("ready", () => socket.emit("joinNotification"));
+
+    socket.on(`company-${user.companyId}-ticket`, (data) => {
+      if (data.action === "updateUnread" || data.action === "delete") {
+        setNotifications((prev) => {
+          const idx = prev.findIndex((t) => t.id === data.ticketId);
+          if (idx !== -1) { prev.splice(idx, 1); return [...prev]; }
+          return prev;
+        });
+
+        setDesktopNotifications((prev) => {
+          const idx = prev.findIndex((n) => n.tag === String(data.ticketId));
+          if (idx !== -1) {
+            prev[idx].close();
+            prev.splice(idx, 1);
+            return [...prev];
+          }
+          return prev;
+        });
       }
     });
+
+    socket.on(`company-${user.companyId}-appMessage`, (data) => {
+      if (
+        data.action === "create" &&
+        !data.message.fromMe &&
+        (data.ticket.status !== "pending") &&
+        (!data.message.read || data.ticket.status === "pending") &&
+        (data.ticket.userId === user?.id || !data.ticket.userId) &&
+        (user?.queues?.some((q) => q.id === data.ticket.queueId) || !data.ticket.queueId)
+      ) {
+        setNotifications((prev) => {
+          const idx = prev.findIndex((t) => t.id === data.ticket.id);
+          if (idx !== -1) { prev[idx] = data.ticket; return [...prev]; }
+          return [data.ticket, ...prev];
+        });
+
+        const shouldNotNotificate =
+          (data.message.ticketId === ticketIdRef.current && document.visibilityState === "visible") ||
+          (data.ticket.userId && data.ticket.userId !== user?.id) ||
+          data.ticket.isGroup;
+
+        if (!shouldNotNotificate) handleNotifications(data);
+      }
+    });
+
     return () => { socket.disconnect(); };
-  }, [socketManager]);
+  }, [user, socketManager]);
 
-  const fetchAnnouncements = async () => {
-    try {
-      const { data } = await api.get("/announcements/", {
-        params: { searchParam, pageNumber },
-      });
-      dispatch({ type: "LOAD_ANNOUNCEMENTS", payload: data.records });
-      setHasMore(data.hasMore);
-      setLoading(false);
-    } catch (err) {
-      toastError(err);
-    }
+  const handleNotifications = (data) => {
+    const { message, contact, ticket } = data;
+
+    const options = {
+      body: `${message.body} - ${format(new Date(), "HH:mm")}`,
+      icon: contact.urlPicture,
+      tag: ticket.id,
+      renotify: true,
+    };
+
+    const notification = new Notification(
+      `${i18n.t("tickets.notification.message")} ${contact.name}`,
+      options
+    );
+
+    notification.onclick = (e) => {
+      e.preventDefault();
+      window.focus();
+      historyRef.current.push(`/tickets/${ticket.uuid}`);
+    };
+
+    setDesktopNotifications((prev) => {
+      const idx = prev.findIndex((n) => n.tag === notification.tag);
+      if (idx !== -1) { prev[idx] = notification; return [...prev]; }
+      return [notification, ...prev];
+    });
+
+    soundAlertRef.current();
   };
 
-  const loadMore = () => setPageNumber((prev) => prev + 1);
-
-  const handleScroll = (e) => {
-    if (!hasMore || loading) return;
-    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
-    if (scrollHeight - (scrollTop + 100) < clientHeight) loadMore();
-  };
-
-  const handleClick = (event) => {
-    setAnchorEl(event.currentTarget);
-    setInvisible(true);
-  };
-
-  const handleClose = () => setAnchorEl(null);
-
-  const borderPriority = (priority) => {
-    if (priority === 1) return "4px solid #b81111";
-    if (priority === 2) return "4px solid orange";
-    if (priority === 3) return "4px solid grey";
-  };
-
-  const getMediaPath = (filename) =>
-    `${process.env.REACT_APP_BACKEND_URL}/public/${filename}`;
-
-  const handleShowAnnouncementDialog = (record) => {
-    setAnnouncement(record);
-    setShowAnnouncementDialog(true);
-    setAnchorEl(null);
-  };
-
-  const open = Boolean(anchorEl);
-  const id = open ? "simple-popover" : undefined;
+  const handleClick = () => setIsOpen((prev) => !prev);
+  const handleClickAway = () => setIsOpen(false);
+  const NotificationTicket = ({ children }) => <div onClick={handleClickAway}>{children}</div>;
 
   return (
-    <div>
-      <AnnouncementDialog
-        announcement={announcement}
-        open={showAnnouncementDialog}
-        handleClose={() => setShowAnnouncementDialog(false)}
-      />
+    <>
       <IconButton
-        variant="contained"
-        aria-describedby={id}
+        size="small"
         onClick={handleClick}
-        style={{ color: iconColor || "white" }}
+        ref={anchorEl}
+        aria-label="Open Notifications"
+        color="inherit"
+        style={iconColor ? { color: iconColor } : undefined}
       >
-        <Badge
-          color="secondary"
-          variant="dot"
-          invisible={invisible || announcements.length < 1}
-        >
-          {/* Mantém o sino como antes */}
-          <Notifications />
+        <Badge overlap="rectangular" badgeContent={notifications.length} color="secondary">
+          <ChatIcon />
         </Badge>
       </IconButton>
 
       <Popover
-        id={id}
-        open={open}
-        anchorEl={anchorEl}
-        onClose={handleClose}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-        transformOrigin={{ vertical: "top", horizontal: "center" }}
+        disableScrollLock
+        open={isOpen}
+        anchorEl={anchorEl.current}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+        transformOrigin={{ vertical: "top", horizontal: "right" }}
+        classes={{ paper: classes.popoverPaper }}
+        onClose={handleClickAway}
       >
-        <Paper variant="outlined" onScroll={handleScroll} className={classes.mainPaper}>
-          <List component="nav" aria-label="main mailbox folders" style={{ minWidth: 300 }}>
-            {isArray(announcements) &&
-              announcements.map((item, key) => (
-                <ListItem
-                  key={key}
-                  style={{
-                    border: "1px solid #eee",
-                    borderLeft: borderPriority(item.priority),
-                    cursor: "pointer",
-                  }}
-                  onClick={() => handleShowAnnouncementDialog(item)}
-                >
-                  {item.mediaPath && (
-                    <ListItemAvatar>
-                      <Avatar alt={item.mediaName} src={getMediaPath(item.mediaPath)} />
-                    </ListItemAvatar>
-                  )}
-                  <ListItemText
-                    primary={item.title}
-                    secondary={
-                      <>
-                        <Typography component="span" style={{ fontSize: 12 }}>
-                          {moment(item.createdAt).format("DD/MM/YYYY")}
-                        </Typography>
-                        <span style={{ marginTop: 5, display: "block" }} />
-                        <Typography component="span" variant="body2">
-                          {item.text}
-                        </Typography>
-                      </>
-                    }
-                  />
-                </ListItem>
-              ))}
-            {isArray(announcements) && announcements.length === 0 && (
-              <ListItem>
-                <ListItemText primary="Nenhum registro" />
-              </ListItem>
-            )}
-          </List>
-        </Paper>
+        <List dense className={classes.tabContainer}>
+          {notifications.length === 0 ? (
+            <ListItem>
+              <ListItemText>{i18n.t("notifications.noTickets")}</ListItemText>
+            </ListItem>
+          ) : (
+            notifications.map((ticket) => (
+              <NotificationTicket key={ticket.id}>
+                <TicketListItem ticket={ticket} />
+              </NotificationTicket>
+            ))
+          )}
+        </List>
       </Popover>
-    </div>
+    </>
   );
-}
+};
+
+export default NotificationsPopOver;

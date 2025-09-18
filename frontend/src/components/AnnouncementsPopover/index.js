@@ -2,8 +2,7 @@ import React, { useEffect, useReducer, useState, useContext } from "react";
 import { makeStyles } from "@material-ui/core/styles";
 import toastError from "../../errors/toastError";
 import Popover from "@material-ui/core/Popover";
-import AnnouncementIcon from "@mui/icons-material/Announcement";
-import Notifications from "@mui/icons-material/Notifications"
+import Notifications from "@mui/icons-material/Notifications";
 
 import {
   Avatar,
@@ -39,17 +38,11 @@ const useStyles = makeStyles((theme) => ({
 }));
 
 function AnnouncementDialog({ announcement, open, handleClose }) {
-  const getMediaPath = (filename) => {
-    return `${process.env.REACT_APP_BACKEND_URL}/public/${filename}`;
-  };
+  const getMediaPath = (filename) =>
+    `${process.env.REACT_APP_BACKEND_URL}/public/${filename}`;
   return (
-    <Dialog
-      open={open}
-      onClose={() => handleClose()}
-      aria-labelledby="alert-dialog-title"
-      aria-describedby="alert-dialog-description"
-    >
-      <DialogTitle id="alert-dialog-title">{announcement.title}</DialogTitle>
+    <Dialog open={open} onClose={() => handleClose()}>
+      <DialogTitle>{announcement.title}</DialogTitle>
       <DialogContent>
         {announcement.mediaPath && (
           <div
@@ -57,18 +50,16 @@ function AnnouncementDialog({ announcement, open, handleClose }) {
               border: "1px solid #f1f1f1",
               margin: "0 auto 20px",
               textAlign: "center",
-              width: "400px",
+              width: 400,
               height: 300,
               backgroundImage: `url(${getMediaPath(announcement.mediaPath)})`,
               backgroundRepeat: "no-repeat",
               backgroundSize: "contain",
               backgroundPosition: "center",
             }}
-          ></div>
+          />
         )}
-        <DialogContentText id="alert-dialog-description">
-          {announcement.text}
-        </DialogContentText>
+        <DialogContentText>{announcement.text}</DialogContentText>
       </DialogContent>
       <DialogActions>
         <Button onClick={() => handleClose()} color="primary" autoFocus>
@@ -83,51 +74,31 @@ const reducer = (state, action) => {
   if (action.type === "LOAD_ANNOUNCEMENTS") {
     const announcements = action.payload;
     const newAnnouncements = [];
-
     if (isArray(announcements)) {
-      announcements.forEach((announcement) => {
-        const announcementIndex = state.findIndex(
-          (u) => u.id === announcement.id
-        );
-        if (announcementIndex !== -1) {
-          state[announcementIndex] = announcement;
-        } else {
-          newAnnouncements.push(announcement);
-        }
+      announcements.forEach((a) => {
+        const idx = state.findIndex((u) => u.id === a.id);
+        if (idx !== -1) state[idx] = a;
+        else newAnnouncements.push(a);
       });
     }
-
     return [...state, ...newAnnouncements];
   }
-
   if (action.type === "UPDATE_ANNOUNCEMENTS") {
-    const announcement = action.payload;
-    const announcementIndex = state.findIndex((u) => u.id === announcement.id);
-
-    if (announcementIndex !== -1) {
-      state[announcementIndex] = announcement;
-      return [...state];
-    } else {
-      return [announcement, ...state];
-    }
+    const a = action.payload;
+    const idx = state.findIndex((u) => u.id === a.id);
+    if (idx !== -1) { state[idx] = a; return [...state]; }
+    return [a, ...state];
   }
-
   if (action.type === "DELETE_ANNOUNCEMENT") {
-    const announcementId = action.payload;
-
-    const announcementIndex = state.findIndex((u) => u.id === announcementId);
-    if (announcementIndex !== -1) {
-      state.splice(announcementIndex, 1);
-    }
+    const id = action.payload;
+    const idx = state.findIndex((u) => u.id === id);
+    if (idx !== -1) state.splice(idx, 1);
     return [...state];
   }
-
-  if (action.type === "RESET") {
-    return [];
-  }
+  if (action.type === "RESET") return [];
 };
 
-export default function AnnouncementsPopover() {
+export default function AnnouncementsPopover({ iconColor }) {
   const classes = useStyles();
 
   const [loading, setLoading] = useState(false);
@@ -149,20 +120,15 @@ export default function AnnouncementsPopover() {
 
   useEffect(() => {
     setLoading(true);
-    const delayDebounceFn = setTimeout(() => {
-      fetchAnnouncements();
-    }, 500);
-    return () => clearTimeout(delayDebounceFn);
+    const t = setTimeout(() => { fetchAnnouncements(); }, 500);
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParam, pageNumber]);
 
   useEffect(() => {
     const companyId = localStorage.getItem("companyId");
     const socket = socketManager.getSocket(companyId);
-    
-    if (!socket) {
-      return () => {}; 
-    }
+    if (!socket) return () => {};
 
     socket.on(`company-announcement`, (data) => {
       if (data.action === "update" || data.action === "create") {
@@ -173,9 +139,7 @@ export default function AnnouncementsPopover() {
         dispatch({ type: "DELETE_ANNOUNCEMENT", payload: +data.id });
       }
     });
-    return () => {
-      socket.disconnect();
-    };
+    return () => { socket.disconnect(); };
   }, [socketManager]);
 
   const fetchAnnouncements = async () => {
@@ -191,16 +155,12 @@ export default function AnnouncementsPopover() {
     }
   };
 
-  const loadMore = () => {
-    setPageNumber((prevState) => prevState + 1);
-  };
+  const loadMore = () => setPageNumber((p) => p + 1);
 
   const handleScroll = (e) => {
     if (!hasMore || loading) return;
     const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
-    if (scrollHeight - (scrollTop + 100) < clientHeight) {
-      loadMore();
-    }
+    if (scrollHeight - (scrollTop + 100) < clientHeight) loadMore();
   };
 
   const handleClick = (event) => {
@@ -208,25 +168,16 @@ export default function AnnouncementsPopover() {
     setInvisible(true);
   };
 
-  const handleClose = () => {
-    setAnchorEl(null);
-  };
+  const handleClose = () => setAnchorEl(null);
 
   const borderPriority = (priority) => {
-    if (priority === 1) {
-      return "4px solid #b81111";
-    }
-    if (priority === 2) {
-      return "4px solid orange";
-    }
-    if (priority === 3) {
-      return "4px solid grey";
-    }
+    if (priority === 1) return "4px solid #b81111";
+    if (priority === 2) return "4px solid orange";
+    if (priority === 3) return "4px solid grey";
   };
 
-  const getMediaPath = (filename) => {
-    return `${process.env.REACT_APP_BACKEND_URL}/public/${filename}`;
-  };
+  const getMediaPath = (filename) =>
+    `${process.env.REACT_APP_BACKEND_URL}/public/${filename}`;
 
   const handleShowAnnouncementDialog = (record) => {
     setAnnouncement(record);
@@ -244,11 +195,13 @@ export default function AnnouncementsPopover() {
         open={showAnnouncementDialog}
         handleClose={() => setShowAnnouncementDialog(false)}
       />
+
       <IconButton
+        size="small"
         variant="contained"
         aria-describedby={id}
         onClick={handleClick}
-        style={{ color: "white" }}
+        style={iconColor ? { color: iconColor } : undefined}
       >
         <Badge
           color="secondary"
@@ -258,36 +211,22 @@ export default function AnnouncementsPopover() {
           <Notifications />
         </Badge>
       </IconButton>
+
       <Popover
         id={id}
         open={open}
         anchorEl={anchorEl}
         onClose={handleClose}
-        anchorOrigin={{
-          vertical: "bottom",
-          horizontal: "center",
-        }}
-        transformOrigin={{
-          vertical: "top",
-          horizontal: "center",
-        }}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+        transformOrigin={{ vertical: "top", horizontal: "center" }}
       >
-        <Paper
-          variant="outlined"
-          onScroll={handleScroll}
-          className={classes.mainPaper}
-        >
-          <List
-            component="nav"
-            aria-label="main mailbox folders"
-            style={{ minWidth: 300 }}
-          >
+        <Paper variant="outlined" onScroll={handleScroll} className={classes.mainPaper}>
+          <List component="nav" aria-label="main mailbox folders" style={{ minWidth: 300 }}>
             {isArray(announcements) &&
               announcements.map((item, key) => (
                 <ListItem
                   key={key}
                   style={{
-                    //background: key % 2 === 0 ? "#ededed" : "white",
                     border: "1px solid #eee",
                     borderLeft: borderPriority(item.priority),
                     cursor: "pointer",
@@ -296,10 +235,7 @@ export default function AnnouncementsPopover() {
                 >
                   {item.mediaPath && (
                     <ListItemAvatar>
-                      <Avatar
-                        alt={item.mediaName}
-                        src={getMediaPath(item.mediaPath)}
-                      />
+                      <Avatar alt={item.mediaName} src={getMediaPath(item.mediaPath)} />
                     </ListItemAvatar>
                   )}
                   <ListItemText
@@ -309,7 +245,7 @@ export default function AnnouncementsPopover() {
                         <Typography component="span" style={{ fontSize: 12 }}>
                           {moment(item.createdAt).format("DD/MM/YYYY")}
                         </Typography>
-                        <span style={{ marginTop: 5, display: "block" }}></span>
+                        <span style={{ marginTop: 5, display: "block" }} />
                         <Typography component="span" variant="body2">
                           {item.text}
                         </Typography>
@@ -319,7 +255,9 @@ export default function AnnouncementsPopover() {
                 </ListItem>
               ))}
             {isArray(announcements) && announcements.length === 0 && (
-              <ListItemText primary="Nenhum registro" />
+              <ListItem>
+                <ListItemText primary="Nenhum registro" />
+              </ListItem>
             )}
           </List>
         </Paper>
