@@ -354,6 +354,8 @@ const LoggedInLayout = ({ children }) => {
                 />
               </Box>
 
+              <Divider className={classes.dividerDense} />
+
               {/* 4: título volume */}
               <Box className={classes.menuBlock} style={{ paddingBottom: 0 }}>
                 <Typography className={classes.sectionTitle}>
@@ -370,8 +372,8 @@ const LoggedInLayout = ({ children }) => {
                       onChange={handleVolumeToggle}
                     />
                   }
-                  label={volume ? (i18n.t("common.on") || "Ligado")
-                                : (i18n.t("common.off") || "Desligado")}
+                  label={volume ? ("Ligado")
+                                : ("Desligado")}
                 />
               </Box>
 
