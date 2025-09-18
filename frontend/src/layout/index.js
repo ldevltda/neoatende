@@ -17,12 +17,14 @@ import {
   Tooltip,
   Switch,
   FormControlLabel,
+  Badge,
 } from "@material-ui/core";
 
 // ===== ÍCONES (Material v5) =====
 import MenuIcon from "@mui/icons-material/Menu";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import AccountCircle from "@mui/icons-material/AccountCircle";
+import AppsIcon from "@mui/icons-material/Apps"; // botão unificado
 // ================================
 
 import MainListItems from "./MainListItems";
@@ -33,10 +35,10 @@ import BackdropLoading from "../components/BackdropLoading";
 import { i18n } from "../translate/i18n";
 import toastError from "../errors/toastError";
 import AnnouncementsPopover from "../components/AnnouncementsPopover";
+import ChatPopover from "../pages/Chat/ChatPopover";
 
 import logo from "../assets/logo.png";
 import { SocketContext } from "../context/Socket/SocketContext";
-import ChatPopover from "../pages/Chat/ChatPopover";
 import ColorModeContext from "../layout/themeContext";
 import LanguageControl from "../components/LanguageControl";
 
@@ -63,19 +65,10 @@ const useStyles = makeStyles((theme) => ({
     [theme.breakpoints.down("sm")]: { height: "48px" },
   },
   langColumn: {
-    // deixa os rádios em coluna
     "& .MuiFormGroup-root": { flexDirection: "column" },
     "& .MuiFormControlLabel-root": { marginLeft: 0, marginRight: 0 },
-
-    // esconde qualquer título interno do LanguageControl
-    "& legend, & .MuiFormLabel-root": {
-      display: "none !important",
-    },
-    // 🔥 seu caso específico: <label for="language-select">Selecione um idioma</label>
-    "& label[for='language-select']": {
-      display: "none !important",
-    },
-    // (fallback) se em algum lugar usarem outro id
+    "& legend, & .MuiFormLabel-root": { display: "none !important" },
+    "& label[for='language-select']": { display: "none !important" },
     "& label[for='language'], & label[for='locale'], & label[for='i18n-language']": {
       display: "none !important",
     },
@@ -154,6 +147,15 @@ const useStyles = makeStyles((theme) => ({
     flexWrap: "nowrap",
   },
   dividerDense: { margin: "0" },
+
+  // Menu de “Caixa” (chat/avisos/notifs)
+  inboxMenuList: { paddingTop: 4, paddingBottom: 4 },
+  inboxItemRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    padding: "6px 12px",
+  },
 }));
 
 const LoggedInLayout = ({ children }) => {
@@ -173,13 +175,21 @@ const LoggedInLayout = ({ children }) => {
   const socketManager = useContext(SocketContext);
 
   // volume 0/1 no localStorage
-  const [volume, setVolume] = useState(
-    Number(localStorage.getItem("volume") || 1)
-  );
+  const [volume, setVolume] = useState(Number(localStorage.getItem("volume") || 1));
   const setVolumeAndPersist = (v) => {
     setVolume(v);
     localStorage.setItem("volume", String(v));
   };
+
+  // ===== estado do botão unificado (badge) =====
+  const [inboxAnchor, setInboxAnchor] = useState(null);
+
+  // 🔔 regra simples p/ dot: considere true se algum localStorage flag estiver ativo
+  const hasChat = localStorage.getItem("chatUnread") === "1";
+  const hasNotif = localStorage.getItem("notificationsUnread") === "1";
+  const hasAnn = localStorage.getItem("announcementsUnread") === "1";
+  const hasAnyInbox = !!(hasChat || hasNotif || hasAnn);
+  // ============================================
 
   useEffect(() => {
     if (document.body.offsetWidth > 1200) setDrawerOpen(true);
@@ -254,10 +264,7 @@ const LoggedInLayout = ({ children }) => {
         variant={drawerVariant}
         className={drawerOpen ? classes.drawerPaper : classes.drawerPaperClose}
         classes={{
-          paper: clsx(
-            classes.drawerPaper,
-            !drawerOpen && classes.drawerPaperClose
-          ),
+          paper: clsx(classes.drawerPaper, !drawerOpen && classes.drawerPaperClose),
         }}
         open={drawerOpen}
       >
@@ -291,10 +298,7 @@ const LoggedInLayout = ({ children }) => {
             variant="contained"
             aria-label="open drawer"
             onClick={() => setDrawerOpen(!drawerOpen)}
-            className={clsx(
-              classes.menuButton,
-              drawerOpen && classes.menuButtonHidden
-            )}
+            className={clsx(classes.menuButton, drawerOpen && classes.menuButtonHidden)}
           >
             <MenuIcon />
           </IconButton>
@@ -302,12 +306,48 @@ const LoggedInLayout = ({ children }) => {
           {/* Header sem textos */}
           <div className={classes.titleSpacer} />
 
-          {/* Ícones visíveis */}
-          {user?.id && <NotificationsPopOver volume={volume} />}
-          <AnnouncementsPopover />
-          <ChatPopover />
+          {/* ===== Botão UNIFICADO (Chat, Notificações, Avisos) ===== */}
+          <IconButton
+            aria-label="caixa"
+            onClick={(e) => setInboxAnchor(e.currentTarget)}
+            style={{ color: "white" }}
+          >
+            <Badge variant="dot" color="secondary" invisible={!hasAnyInbox}>
+              <AppsIcon />
+            </Badge>
+          </IconButton>
 
-          {/* Avatar / Menu */}
+          <Menu
+            anchorEl={inboxAnchor}
+            open={Boolean(inboxAnchor)}
+            onClose={() => setInboxAnchor(null)}
+            getContentAnchorEl={null}
+            anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+            transformOrigin={{ vertical: "top", horizontal: "right" }}
+          >
+            <Box className={classes.inboxMenuList}>
+              {/* Mantemos os componentes originais aqui dentro */}
+              <div className={classes.inboxItemRow}>
+                <ChatPopover />
+                <Typography variant="body2">Chat</Typography>
+              </div>
+              <div className={classes.inboxItemRow}>
+                <NotificationsPopOver volume={volume} />
+                <Typography variant="body2">
+                  {i18n.t("mainDrawer.appBar.notifications") || "Notificações"}
+                </Typography>
+              </div>
+              <div className={classes.inboxItemRow}>
+                <AnnouncementsPopover />
+                <Typography variant="body2">
+                  {i18n.t("mainDrawer.appBar.announcements") || "Avisos"}
+                </Typography>
+              </div>
+            </Box>
+          </Menu>
+          {/* ======================================================== */}
+
+          {/* Avatar / Menu de Perfil + Tema/Volume/Idioma */}
           <div>
             <IconButton
               aria-label="account of current user"
@@ -335,7 +375,7 @@ const LoggedInLayout = ({ children }) => {
                   <Typography variant="subtitle2" style={{ fontWeight: 700, fontSize: "1rem" }}>
                     {user?.company?.name || ""}
                   </Typography>
-                  <Typography variant="body2" style={{ opacity: 0.9 , fontSize: "1rem" }}>
+                  <Typography variant="body2" style={{ opacity: 0.9, fontSize: "1rem" }}>
                     {" | "}{user?.name || ""}
                   </Typography>
                   <Tooltip title={i18n.t("mainDrawer.appBar.user.profile") || "Ver Perfil"}>
@@ -351,7 +391,7 @@ const LoggedInLayout = ({ children }) => {
               {/* 2: título tema */}
               <Box className={classes.menuBlock} style={{ paddingBottom: 0 }}>
                 <Typography className={classes.sectionTitle}>
-                  {i18n.t("selectTheme") || "Selecione um Tema"}
+                  {i18n.t("selectTheme") || "Selecione o tema"}
                 </Typography>
               </Box>
               {/* 3: switch tema */}
@@ -364,11 +404,7 @@ const LoggedInLayout = ({ children }) => {
                       onChange={handleThemeToggle}
                     />
                   }
-                  label={
-                    theme.mode === "dark"
-                      ? ("Dark")
-                      : ("Light")
-                  }
+                  label={theme.mode === "dark" ? "Dark" : "Light"}
                 />
               </Box>
 
@@ -390,8 +426,7 @@ const LoggedInLayout = ({ children }) => {
                       onChange={handleVolumeToggle}
                     />
                   }
-                  label={volume ? ("Ligado")
-                                : ("Desligado")}
+                  label={volume ? "Ligado" : "Desligado"}
                 />
               </Box>
 

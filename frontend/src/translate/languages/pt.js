@@ -856,6 +856,7 @@ const messages = {
           files: "Lista de arquivos",
           prompts: "Agentes de IA",
           queueIntegration: "Integrações",
+          ApiIntegration: 'Integrações APIs'
         },
         appBar: {
           refresh: "Recarregar página",
