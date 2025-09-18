@@ -262,7 +262,7 @@ export function PlanManagerForm(props) {
                         {/* OPENAI */}
                         <Grid xs={12} sm={8} md={2} item>
                             <FormControl margin="dense" variant="outlined" fullWidth>
-                                <InputLabel htmlFor="useOpenAi-selection">Open.Ai</InputLabel>
+                                <InputLabel htmlFor="useOpenAi-selection">Agentes IA</InputLabel>
                                 <Field
                                     as={Select}
                                     id="useOpenAi-selection"
