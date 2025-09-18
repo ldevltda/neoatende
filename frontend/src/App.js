@@ -46,6 +46,15 @@ const App = () => {
                 body1: { fontWeight: 400 },
                 body2: { fontWeight: 400 },
             },
+            overrides: {
+                MuiListSubheader: {
+                    root: {
+                    fontSize: "0.875rem", // mesmo que os ListItemText
+                    fontWeight: 500,
+                    lineHeight: "1.5",
+                    },
+                },
+            },
             scrollbarStyles: {
                 "&::-webkit-scrollbar": {
                     width: '8px',
