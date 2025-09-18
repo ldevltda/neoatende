@@ -1,4 +1,3 @@
-// frontend/src/pages/Chat/ChatPopover.js
 import React, {
   useContext,
   useEffect,
@@ -73,7 +72,14 @@ const reducer = (state, action) => {
   }
 };
 
-export default function ChatPopover({ iconColor, badgeColor = "secondary" }) {
+/**
+ * Chat interno
+ * Props:
+ * - iconColor?: string
+ * - badgeColor?: mui color
+ * - onCountChange?: (n:number)=>void  ⬅️ reporta contagem para o avatar
+ */
+export default function ChatPopover({ iconColor, badgeColor = "secondary", onCountChange }) {
   const classes = useStyles();
   const { user } = useContext(AuthContext);
   const socketManager = useContext(SocketContext);
@@ -91,16 +97,9 @@ export default function ChatPopover({ iconColor, badgeColor = "secondary" }) {
   const [play] = useSound(notifySound);
   const soundRef = useRef();
 
-  // ---- Effects -------------------------------------------------------------
-
   useEffect(() => {
     soundRef.current = play;
-
-    if ("Notification" in window) {
-      Notification.requestPermission();
-    } else {
-      console.log("Browser does not support Notification API");
-    }
+    if ("Notification" in window) Notification.requestPermission();
   }, [play]);
 
   useEffect(() => {
@@ -122,10 +121,8 @@ export default function ChatPopover({ iconColor, badgeColor = "secondary" }) {
 
     socket.on(`company-${companyId}-chat`, (data) => {
       if (data.action === "new-message") {
-        // atualiza o chat na lista
         dispatch({ type: "CHANGE_CHAT", payload: data });
 
-        // toca som se a msg for deste chat para este usuário (e não enviada por ele)
         try {
           const usersArr = data.newMessage?.chat?.users || [];
           const userIds = usersArr.map((u) => u.userId);
@@ -148,7 +145,7 @@ export default function ChatPopover({ iconColor, badgeColor = "secondary" }) {
     };
   }, [socketManager, user?.id]);
 
-  // recalcula total não lidas do usuário
+  // recalcula total de não lidas do usuário e reporta
   useEffect(() => {
     let total = 0;
     for (const chat of chats) {
@@ -159,7 +156,9 @@ export default function ChatPopover({ iconColor, badgeColor = "secondary" }) {
     setUnreadCount(total);
   }, [chats, user?.id]);
 
-  // ---- Data ---------------------------------------------------------------
+  useEffect(() => {
+    if (typeof onCountChange === "function") onCountChange(unreadCount);
+  }, [unreadCount, onCountChange]);
 
   const fetchChats = async () => {
     try {
@@ -183,8 +182,6 @@ export default function ChatPopover({ iconColor, badgeColor = "secondary" }) {
     if (scrollHeight - (scrollTop + 100) < clientHeight) loadMore();
   };
 
-  // ---- UI handlers --------------------------------------------------------
-
   const handleOpen = (ev) => setAnchorEl(ev.currentTarget);
   const handleClose = () => setAnchorEl(null);
 
@@ -192,8 +189,6 @@ export default function ChatPopover({ iconColor, badgeColor = "secondary" }) {
 
   const open = Boolean(anchorEl);
   const id = open ? "chat-popover" : undefined;
-
-  // ---- Render -------------------------------------------------------------
 
   return (
     <div>
@@ -236,17 +231,13 @@ export default function ChatPopover({ iconColor, badgeColor = "secondary" }) {
           <List component="nav" aria-label="chat list" style={{ minWidth: 300 }}>
             {isArray(chats) && chats.length > 0 ? (
               chats.map((item) => {
-                // total não lidas deste chat para o usuário
                 const me = (item.users || []).find((u) => u.userId === user?.id);
                 const unread = Number(me?.unreads || 0);
 
                 return (
                   <ListItem
                     key={item.id}
-                    style={{
-                      border: "1px solid #eee",
-                      cursor: "pointer",
-                    }}
+                    style={{ border: "1px solid #eee", cursor: "pointer" }}
                     onClick={() => goToMessages(item)}
                     button
                   >

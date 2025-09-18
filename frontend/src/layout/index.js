@@ -17,6 +17,7 @@ import {
   Tooltip,
   Switch,
   FormControlLabel,
+  Badge, // ⬅️ badge para o avatar
 } from "@material-ui/core";
 
 import MenuIcon from "@mui/icons-material/Menu";
@@ -146,20 +147,19 @@ const useStyles = makeStyles((theme) => ({
   },
   rowSpacer: { flex: 1 },
 
-  // 🔧 deixa os ícones no padrão do perfil
   inlineActions: {
     display: "flex",
     alignItems: "center",
     gap: 4,
     "& .MuiIconButton-root": {
-      padding: 6,                          // compacto
-      color: theme.palette.text.secondary, // mesma cor do texto secundário
+      padding: 6,
+      color: theme.palette.text.secondary,
     },
     "& .MuiSvgIcon-root": {
-      fontSize: 20,                        // mesmo tamanho do ícone pequeno do perfil
+      fontSize: 20,
     },
     "& .MuiBadge-badge": {
-      transform: "scale(0.65) translate(60%, -60%)", // badge discreto
+      transform: "scale(0.65) translate(60%, -60%)",
     },
   },
 
@@ -181,6 +181,12 @@ const LoggedInLayout = ({ children }) => {
   useMediaQuery(theme.breakpoints.up("sm"));
 
   const socketManager = useContext(SocketContext);
+
+  // contadores para o badge do avatar
+  const [chatCount, setChatCount] = useState(0);
+  const [notifCount, setNotifCount] = useState(0);
+  const [announceCount, setAnnounceCount] = useState(0);
+  const totalBadge = chatCount + notifCount + announceCount;
 
   const [volume, setVolume] = useState(
     Number(localStorage.getItem("volume") || 1)
@@ -238,9 +244,6 @@ const LoggedInLayout = ({ children }) => {
     handleCloseMenu();
     handleLogout();
   };
-  const drawerClose = () => {
-    if (document.body.offsetWidth < 600) setDrawerOpen(false);
-  };
 
   const handleThemeToggle = (e) => {
     const wantsDark = e.target.checked;
@@ -270,13 +273,13 @@ const LoggedInLayout = ({ children }) => {
       >
         <div className={classes.toolbarIcon}>
           <img src={logo} className={classes.logo} alt="logo" />
-        <IconButton onClick={() => setDrawerOpen(!drawerOpen)}>
+          <IconButton onClick={() => setDrawerOpen(!drawerOpen)}>
             <ChevronLeftIcon />
           </IconButton>
         </div>
         <Divider />
         <List className={classes.containerWithScroll}>
-          <MainListItems drawerClose={drawerClose} collapsed={!drawerOpen} />
+          <MainListItems drawerClose={() => {}} collapsed={!drawerOpen} />
         </List>
         <Divider />
       </Drawer>
@@ -308,7 +311,7 @@ const LoggedInLayout = ({ children }) => {
 
           <div className={classes.titleSpacer} />
 
-          {/* Só o botão do perfil no header */}
+          {/* Botão do perfil com badge somado */}
           <div>
             <IconButton
               aria-label="account of current user"
@@ -318,7 +321,14 @@ const LoggedInLayout = ({ children }) => {
               variant="contained"
               style={{ color: "white" }}
             >
-              <AccountCircle />
+              <Badge
+                overlap="circular"
+                color="secondary"
+                badgeContent={totalBadge}
+                invisible={totalBadge === 0}
+              >
+                <AccountCircle />
+              </Badge>
             </IconButton>
 
             <Menu
@@ -330,7 +340,7 @@ const LoggedInLayout = ({ children }) => {
               open={menuOpen}
               onClose={handleCloseMenu}
             >
-              {/* Topo do menu: empresa | usuário + ações compactas */}
+              {/* Topo: empresa | usuário + ações */}
               <Box className={classes.menuBlock}>
                 <div className={classes.profileRow}>
                   <Typography variant="subtitle2" style={{ fontWeight: 700, fontSize: "1rem" }}>
@@ -346,18 +356,23 @@ const LoggedInLayout = ({ children }) => {
                     </IconButton>
                   </Tooltip>
 
-                  {/* <span className={classes.rowSpacer} /> */}
-
                   {/* Ícones no padrão do perfil */}
                   <div className={classes.inlineActions}>
-                    {/* ChatPopover já usa IconButton; não força cor aqui */}
-                    <ChatPopover />
-
-                    {/* Sino (Avisos) e Mensagens (Tickets) com cor do texto secundário */}
-                    <AnnouncementsPopover iconColor={undefined} />
+                    <ChatPopover
+                      iconColor={theme.palette.text.secondary}
+                      badgeColor="secondary"
+                      onCountChange={setChatCount}
+                    />
+                    <AnnouncementsPopover
+                      iconColor={theme.palette.text.secondary}
+                      badgeColor="secondary"
+                      onCountChange={setAnnounceCount}
+                    />
                     <NotificationsPopOver
                       volume={volume}
-                      iconColor={undefined}
+                      iconColor={theme.palette.text.secondary}
+                      badgeColor="secondary"
+                      onCountChange={setNotifCount}
                     />
                   </div>
                 </div>

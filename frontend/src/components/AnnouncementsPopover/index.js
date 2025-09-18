@@ -107,12 +107,17 @@ const reducer = (state, action) => {
 
 /**
  * Avisos/broadcasts
- * Props: iconColor, badgeColor, tooltip (todos opcionais)
+ * Props:
+ * - iconColor?: string
+ * - badgeColor?: mui color
+ * - tooltip?: string
+ * - onCountChange?: (n:number)=>void  ⬅️ reporta contagem para o avatar
  */
 export default function AnnouncementsPopover({
   iconColor,
   badgeColor = "secondary",
   tooltip = "Avisos",
+  onCountChange,
 }) {
   const classes = useStyles();
 
@@ -180,6 +185,11 @@ export default function AnnouncementsPopover({
   const open = Boolean(anchorEl);
   const id = open ? "ann-popover" : undefined;
   const count = announcements.length;
+
+  // reporta contagem para o avatar
+  useEffect(() => {
+    if (typeof onCountChange === "function") onCountChange(count);
+  }, [count, onCountChange]);
 
   return (
     <div>

@@ -40,16 +40,18 @@ const useStyles = makeStyles((theme) => ({
 
 /**
  * Notificações de tickets (mensagens novas)
- * Props opcionais:
- * - iconColor: cor do ícone (por padrão herda do contexto)
- * - badgeColor: cor do badge (padrão "secondary")
- * - tooltip: texto do tooltip (default traduzido)
+ * Props:
+ * - iconColor?: string
+ * - badgeColor?: "default" | "primary" | "secondary" | ...
+ * - tooltip?: string
+ * - onCountChange?: (n: number) => void  ⬅️ reporta contagem para o avatar
  */
 const NotificationsPopOver = ({
   volume: volumeProp,
   iconColor,
   badgeColor = "secondary",
   tooltip,
+  onCountChange,
 }) => {
   const classes = useStyles();
 
@@ -66,7 +68,6 @@ const NotificationsPopOver = ({
   const [, setDesktopNotifications] = useState([]);
   const { tickets } = useTickets({ withUnreadMessages: "true" });
 
-  // volume: aceita prop (0/1) ou localStorage, default 1
   const effectiveVolume = Number(
     volumeProp ?? localStorage.getItem("volume") ?? 1
   );
@@ -91,26 +92,15 @@ const NotificationsPopOver = ({
 
   useEffect(() => {
     soundAlertRef.current = play;
-
-    if (!("Notification" in window)) {
-      console.log("This browser doesn't support notifications");
-    } else {
-      Notification.requestPermission();
-    }
+    if ("Notification" in window) Notification.requestPermission();
   }, [play]);
 
   useEffect(() => {
-    const processNotifications = () => {
-      if (showPendingTickets) {
-        setNotifications(tickets);
-      } else {
-        const newNotifications = tickets.filter(
-          (t) => t.status !== "pending"
-        );
-        setNotifications(newNotifications);
-      }
-    };
-    processNotifications();
+    if (showPendingTickets) {
+      setNotifications(tickets);
+    } else {
+      setNotifications(tickets.filter((t) => t.status !== "pending"));
+    }
   }, [tickets, showPendingTickets]);
 
   useEffect(() => {
@@ -164,63 +154,29 @@ const NotificationsPopOver = ({
           return [data.ticket, ...prev];
         });
 
-        const shouldNotNotificate =
+        const mute =
           (data.message.ticketId === ticketIdRef.current &&
             document.visibilityState === "visible") ||
           (data.ticket.userId && data.ticket.userId !== user?.id) ||
           data.ticket.isGroup;
 
-        if (!shouldNotNotificate) {
-          handleNotifications(data);
+        if (!mute && typeof soundAlertRef.current === "function") {
+          soundAlertRef.current();
         }
       }
     });
 
-    return () => {
-      socket.disconnect();
-    };
+    return () => socket.disconnect();
   }, [user, socketManager]);
 
-  const handleNotifications = (data) => {
-    const { message, contact, ticket } = data;
-
-    const options = {
-      body: `${message.body} - ${format(new Date(), "HH:mm")}`,
-      icon: contact.urlPicture,
-      tag: ticket.id,
-      renotify: true,
-    };
-
-    const notification = new Notification(
-      `${i18n.t("tickets.notification.message")} ${contact.name}`,
-      options
-    );
-
-    notification.onclick = (e) => {
-      e.preventDefault();
-      window.focus();
-      historyRef.current.push(`/tickets/${ticket.uuid}`);
-    };
-
-    setDesktopNotifications((prev) => {
-      const nIdx = prev.findIndex((n) => n.tag === notification.tag);
-      if (nIdx !== -1) {
-        prev[nIdx] = notification;
-        return [...prev];
-      }
-      return [notification, ...prev];
-    });
-
-    // ✅ evita 'no-unused-expressions'
-    if (typeof soundAlertRef.current === "function") {
-      soundAlertRef.current();
-    }
-  };
+  // reporta contagem para o avatar
+  const count = notifications.length;
+  useEffect(() => {
+    if (typeof onCountChange === "function") onCountChange(count);
+  }, [count, onCountChange]);
 
   const handleToggle = () => setIsOpen((p) => !p);
   const handleClickAway = () => setIsOpen(false);
-
-  const count = notifications.length;
 
   return (
     <>
