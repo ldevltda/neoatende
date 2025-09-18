@@ -70,6 +70,9 @@ const useStyles = makeStyles((theme) => ({
       marginLeft: 0,
       marginRight: 0,
     },
+    "& .MuiFormLabel-root": {
+      display: "none",   // esconde só o label (que é "Selecione um idioma")
+    },
   },
   appBar: {
     zIndex: theme.zIndex.drawer + 1,
@@ -136,7 +139,7 @@ const useStyles = makeStyles((theme) => ({
   },
 
   // Menu do avatar
-  menuBlock: { padding: "10px 16px" },
+  menuBlock: { padding: "6px 16px" },
   sectionTitle: { fontSize: 12, opacity: 0.7, marginBottom: 6 },
   profileRow: {
     display: "flex",
@@ -144,7 +147,7 @@ const useStyles = makeStyles((theme) => ({
     gap: 8,
     flexWrap: "nowrap",
   },
-  dividerDense: { margin: "8px 0" },
+  dividerDense: { margin: "0" },
 }));
 
 const LoggedInLayout = ({ children }) => {
