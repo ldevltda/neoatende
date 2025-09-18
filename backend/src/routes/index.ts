@@ -35,6 +35,7 @@ import flowDefaultRoutes from "./flowDefaultRoutes";
 import flowBuilder from "./flowBuilderRoutes";
 import flowCampaignRoutes from "./flowCampaignRoutes";
 import inventoryRoutes from "./inventoryRoutes";
+import leadWebhookRoutes from "./leadWebhookRoutes";
 const routes = Router();
 
 routes.use(userRoutes);
@@ -73,5 +74,6 @@ routes.use(flowDefaultRoutes);
 routes.use(flowBuilder)
 routes.use(flowCampaignRoutes)
 routes.use(inventoryRoutes);
+routes.use(leadWebhookRoutes);
 
 export default routes;
