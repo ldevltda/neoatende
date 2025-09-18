@@ -1,3 +1,4 @@
+// (versão completa; nova prop `headless` + retorno condicional)
 import React, {
   useContext,
   useEffect,
@@ -59,12 +60,10 @@ const reducer = (state, action) => {
       }
       return next;
     }
-    case "CHANGE_CHAT": {
-      const next = state.map((c) =>
+    case "CHANGE_CHAT":
+      return state.map((c) =>
         c.id === action.payload.chat.id ? action.payload.chat : c
       );
-      return next;
-    }
     case "RESET":
       return [];
     default:
@@ -73,13 +72,17 @@ const reducer = (state, action) => {
 };
 
 /**
- * Chat interno
  * Props:
- * - iconColor?: string
- * - badgeColor?: mui color
- * - onCountChange?: (n:number)=>void  ⬅️ reporta contagem para o avatar
+ * - headless?: boolean
+ * - iconColor, badgeColor
+ * - onCountChange?: (n)=>void
  */
-export default function ChatPopover({ iconColor, badgeColor = "secondary", onCountChange }) {
+export default function ChatPopover({
+  headless = false,
+  iconColor,
+  badgeColor = "secondary",
+  onCountChange,
+}) {
   const classes = useStyles();
   const { user } = useContext(AuthContext);
   const socketManager = useContext(SocketContext);
@@ -122,30 +125,23 @@ export default function ChatPopover({ iconColor, badgeColor = "secondary", onCou
     socket.on(`company-${companyId}-chat`, (data) => {
       if (data.action === "new-message") {
         dispatch({ type: "CHANGE_CHAT", payload: data });
-
         try {
           const usersArr = data.newMessage?.chat?.users || [];
           const userIds = usersArr.map((u) => u.userId);
           const fromOther = data.newMessage?.senderId !== user?.id;
           if (userIds.includes(user?.id) && fromOther) {
-            if (typeof soundRef.current === "function") {
-              soundRef.current();
-            }
+            if (typeof soundRef.current === "function") soundRef.current();
           }
         } catch (_) {}
       }
-
       if (data.action === "update") {
         dispatch({ type: "CHANGE_CHAT", payload: data });
       }
     });
 
-    return () => {
-      socket.disconnect();
-    };
+    return () => socket.disconnect();
   }, [socketManager, user?.id]);
 
-  // recalcula total de não lidas do usuário e reporta
   useEffect(() => {
     let total = 0;
     for (const chat of chats) {
@@ -165,7 +161,7 @@ export default function ChatPopover({ iconColor, badgeColor = "secondary", onCou
       const { data } = await api.get("/chats/", {
         params: { searchParam, pageNumber },
       });
-      dispatch({ type: "LOAD_CHATS", payload: data.records });
+      dispatch({ type: "LOAD_CHATS", payload: data.records || [] });
       setHasMore(!!data.hasMore);
       setLoading(false);
     } catch (err) {
@@ -182,9 +178,10 @@ export default function ChatPopover({ iconColor, badgeColor = "secondary", onCou
     if (scrollHeight - (scrollTop + 100) < clientHeight) loadMore();
   };
 
+  if (headless) return null;
+
   const handleOpen = (ev) => setAnchorEl(ev.currentTarget);
   const handleClose = () => setAnchorEl(null);
-
   const goToMessages = (chat) => (window.location.href = `/chats/${chat.uuid}`);
 
   const open = Boolean(anchorEl);
@@ -223,17 +220,12 @@ export default function ChatPopover({ iconColor, badgeColor = "secondary", onCou
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
         transformOrigin={{ vertical: "top", horizontal: "center" }}
       >
-        <Paper
-          variant="outlined"
-          onScroll={handleScroll}
-          className={classes.mainPaper}
-        >
+        <Paper variant="outlined" onScroll={handleScroll} className={classes.mainPaper}>
           <List component="nav" aria-label="chat list" style={{ minWidth: 300 }}>
             {isArray(chats) && chats.length > 0 ? (
               chats.map((item) => {
                 const me = (item.users || []).find((u) => u.userId === user?.id);
                 const unread = Number(me?.unreads || 0);
-
                 return (
                   <ListItem
                     key={item.id}
@@ -250,10 +242,7 @@ export default function ChatPopover({ iconColor, badgeColor = "secondary", onCou
                             {datetimeToClient(item.updatedAt)}
                           </Typography>
                           {unread > 0 && (
-                            <Typography
-                              component="span"
-                              style={{ fontSize: 12, marginLeft: 8 }}
-                            >
+                            <Typography component="span" style={{ fontSize: 12, marginLeft: 8 }}>
                               • {unread} não lida{unread > 1 ? "s" : ""}
                             </Typography>
                           )}

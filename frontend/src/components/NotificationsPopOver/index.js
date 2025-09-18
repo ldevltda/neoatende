@@ -1,3 +1,6 @@
+// frontend/src/components/NotificationsPopOver/index.js
+// (versão completa; diferenças principais: nova prop `headless` e retorno condicional)
+
 import React, { useState, useRef, useEffect, useContext } from "react";
 import { useHistory } from "react-router-dom";
 import { format } from "date-fns";
@@ -41,12 +44,14 @@ const useStyles = makeStyles((theme) => ({
 /**
  * Notificações de tickets (mensagens novas)
  * Props:
+ * - headless?: boolean  -> mantém lógica ativa, mas não renderiza UI
  * - iconColor?: string
- * - badgeColor?: "default" | "primary" | "secondary" | ...
+ * - badgeColor?: mui color
  * - tooltip?: string
- * - onCountChange?: (n: number) => void  ⬅️ reporta contagem para o avatar
+ * - onCountChange?: (n:number)=>void
  */
 const NotificationsPopOver = ({
+  headless = false,
   volume: volumeProp,
   iconColor,
   badgeColor = "secondary",
@@ -80,9 +85,7 @@ const NotificationsPopOver = ({
   useEffect(() => {
     const fetchSettings = async () => {
       try {
-        if (user.allTicket === "enable") {
-          setShowPendingTickets(true);
-        }
+        if (user.allTicket === "enable") setShowPendingTickets(true);
       } catch (err) {
         toastError(err);
       }
@@ -96,11 +99,8 @@ const NotificationsPopOver = ({
   }, [play]);
 
   useEffect(() => {
-    if (showPendingTickets) {
-      setNotifications(tickets);
-    } else {
-      setNotifications(tickets.filter((t) => t.status !== "pending"));
-    }
+    if (showPendingTickets) setNotifications(tickets);
+    else setNotifications(tickets.filter((t) => t.status !== "pending"));
   }, [tickets, showPendingTickets]);
 
   useEffect(() => {
@@ -109,7 +109,6 @@ const NotificationsPopOver = ({
 
   useEffect(() => {
     const socket = socketManager.getSocket(user.companyId);
-
     socket.on("ready", () => socket.emit("joinNotification"));
 
     socket.on(`company-${user.companyId}-ticket`, (data) => {
@@ -169,11 +168,15 @@ const NotificationsPopOver = ({
     return () => socket.disconnect();
   }, [user, socketManager]);
 
-  // reporta contagem para o avatar
   const count = notifications.length;
+
+  // reporta contagem para o header
   useEffect(() => {
     if (typeof onCountChange === "function") onCountChange(count);
   }, [count, onCountChange]);
+
+  // --- Headless: só efeitos/contagem, sem UI
+  if (headless) return null;
 
   const handleToggle = () => setIsOpen((p) => !p);
   const handleClickAway = () => setIsOpen(false);
@@ -216,9 +219,7 @@ const NotificationsPopOver = ({
         <List dense className={classes.tabContainer}>
           {count === 0 ? (
             <ListItem>
-              <ListItemText>
-                {i18n.t("notifications.noTickets")}
-              </ListItemText>
+              <ListItemText>{i18n.t("notifications.noTickets")}</ListItemText>
             </ListItem>
           ) : (
             notifications.map((ticket) => (

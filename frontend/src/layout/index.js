@@ -1,3 +1,4 @@
+// frontend/src/layout/index.js
 import React, { useState, useContext, useEffect } from "react";
 import clsx from "clsx";
 import {
@@ -17,7 +18,7 @@ import {
   Tooltip,
   Switch,
   FormControlLabel,
-  Badge, // ⬅️ badge para o avatar
+  Badge,
 } from "@material-ui/core";
 
 import MenuIcon from "@mui/icons-material/Menu";
@@ -145,8 +146,8 @@ const useStyles = makeStyles((theme) => ({
     gap: 8,
     flexWrap: "nowrap",
   },
-  rowSpacer: { flex: 1 },
 
+  // Ícones visíveis dentro do menu (padrão do perfil)
   inlineActions: {
     display: "flex",
     alignItems: "center",
@@ -188,6 +189,7 @@ const LoggedInLayout = ({ children }) => {
   const [announceCount, setAnnounceCount] = useState(0);
   const totalBadge = chatCount + notifCount + announceCount;
 
+  // volume
   const [volume, setVolume] = useState(
     Number(localStorage.getItem("volume") || 1)
   );
@@ -311,6 +313,11 @@ const LoggedInLayout = ({ children }) => {
 
           <div className={classes.titleSpacer} />
 
+          {/* Headless listeners SEM UI – ficam sempre montados para atualizar o badge */}
+          <ChatPopover headless onCountChange={setChatCount} />
+          <AnnouncementsPopover headless onCountChange={setAnnounceCount} />
+          <NotificationsPopOver headless volume={volume} onCountChange={setNotifCount} />
+
           {/* Botão do perfil com badge somado */}
           <div>
             <IconButton
@@ -340,7 +347,7 @@ const LoggedInLayout = ({ children }) => {
               open={menuOpen}
               onClose={handleCloseMenu}
             >
-              {/* Topo: empresa | usuário + ações */}
+              {/* Topo: empresa | usuário + ações visíveis */}
               <Box className={classes.menuBlock}>
                 <div className={classes.profileRow}>
                   <Typography variant="subtitle2" style={{ fontWeight: 700, fontSize: "1rem" }}>
@@ -356,23 +363,19 @@ const LoggedInLayout = ({ children }) => {
                     </IconButton>
                   </Tooltip>
 
-                  {/* Ícones no padrão do perfil */}
                   <div className={classes.inlineActions}>
                     <ChatPopover
                       iconColor={theme.palette.text.secondary}
                       badgeColor="secondary"
-                      onCountChange={setChatCount}
                     />
                     <AnnouncementsPopover
                       iconColor={theme.palette.text.secondary}
                       badgeColor="secondary"
-                      onCountChange={setAnnounceCount}
                     />
                     <NotificationsPopOver
                       volume={volume}
                       iconColor={theme.palette.text.secondary}
                       badgeColor="secondary"
-                      onCountChange={setNotifCount}
                     />
                   </div>
                 </div>
