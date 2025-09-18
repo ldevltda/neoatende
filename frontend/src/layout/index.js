@@ -342,7 +342,7 @@ const LoggedInLayout = ({ children }) => {
               {/* 2: título tema */}
               <Box className={classes.menuBlock} style={{ paddingBottom: 0 }}>
                 <Typography className={classes.sectionTitle}>
-                  {i18n.t("common.selectTheme") || "Selecione um Tema"}
+                  {i18n.t("selectTheme") || "Selecione um Tema"}
                 </Typography>
               </Box>
               {/* 3: switch tema */}
@@ -368,7 +368,7 @@ const LoggedInLayout = ({ children }) => {
               {/* 4: título volume */}
               <Box className={classes.menuBlock} style={{ paddingBottom: 0 }}>
                 <Typography className={classes.sectionTitle}>
-                  {i18n.t("common.setVolume") || "Volume"}
+                  {i18n.t("setVolume") || "Volume"}
                 </Typography>
               </Box>
               {/* 5: switch volume */}
@@ -390,7 +390,7 @@ const LoggedInLayout = ({ children }) => {
               <Divider className={classes.dividerDense} />
               <Box className={classes.menuBlock} style={{ paddingBottom: 0 }}>
                 <Typography className={classes.sectionTitle}>
-                  {i18n.t("common.selectLanguage") || "Selecione um idioma"}
+                  {i18n.t("selectLanguage") || "Selecione um idioma"}
                 </Typography>
               </Box>
               {/* 7–9: radios idioma */}
