@@ -16,6 +16,7 @@ import {
   Box,
   Tooltip,
   Switch,
+  FormControlLabel,
 } from "@material-ui/core";
 
 // ===== ÍCONES (Material v5) =====
