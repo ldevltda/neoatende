@@ -63,15 +63,21 @@ const useStyles = makeStyles((theme) => ({
     [theme.breakpoints.down("sm")]: { height: "48px" },
   },
   langColumn: {
-    "& .MuiFormGroup-root": {           // RadioGroup
-      flexDirection: "column",
-    },
-    "& .MuiFormControlLabel-root": {    // cada opção
-      marginLeft: 0,
-      marginRight: 0,
-    },
+    // deixa os rádios em coluna
+    "& .MuiFormGroup-root": { flexDirection: "column" },
+    "& .MuiFormControlLabel-root": { marginLeft: 0, marginRight: 0 },
+
+    // esconde qualquer título interno do LanguageControl
     "& legend, & .MuiFormLabel-root": {
-      display: "none !important",   // esconde só o label (que é "Selecione um idioma")
+      display: "none !important",
+    },
+    // 🔥 seu caso específico: <label for="language-select">Selecione um idioma</label>
+    "& label[for='language-select']": {
+      display: "none !important",
+    },
+    // (fallback) se em algum lugar usarem outro id
+    "& label[for='language'], & label[for='locale'], & label[for='i18n-language']": {
+      display: "none !important",
     },
   },
   appBar: {
