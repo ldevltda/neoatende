@@ -326,10 +326,10 @@ const LoggedInLayout = ({ children }) => {
               {/* 1ª linha: Empresa | Usuário + ícone ver perfil */}
               <Box className={classes.menuBlock}>
                 <div className={classes.profileRow}>
-                  <Typography variant="subtitle2" style={{ fontWeight: 700 }}>
+                  <Typography variant="subtitle2" style={{ fontWeight: 700, fontSize: "1rem" }}>
                     {user?.company?.name || ""}
                   </Typography>
-                  <Typography variant="body2" style={{ opacity: 0.9 }}>
+                  <Typography variant="body2" style={{ opacity: 0.9 , fontSize: "1rem" }}>
                     {" | "}{user?.name || ""}
                   </Typography>
                   <Tooltip title={i18n.t("mainDrawer.appBar.user.profile") || "Ver Perfil"}>
