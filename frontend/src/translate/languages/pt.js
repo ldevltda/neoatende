@@ -1,6 +1,8 @@
 const messages = {
   pt: {
     translations: {
+      setVolume: "Volume",
+      selectTheme: "Selecione o tema",
       selectLanguage: "Selecione um idioma",
       signup: {
         title: "Cadastre-se",

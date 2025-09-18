@@ -1,7 +1,9 @@
 const messages = {
 	en: {
 		translations: {
+			selectTheme: "Select the theme",
 			selectLanguage: "Select Language",
+			setVolume: "Volume",
 			signup: {
 				title: "Sign Up",
 				toasts: {
@@ -836,7 +838,7 @@ const messages = {
 					chats: "Internal Chat",
 					financeiro: "Financial",
 					files: "File List",
-					prompts: "Agentes de IA",
+					prompts: "IA Agentes",
 					queueIntegration: "Integrations",
 				},
 				appBar: {
