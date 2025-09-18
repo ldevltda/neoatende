@@ -159,7 +159,7 @@ const useStyles = makeStyles((theme) => ({
       fontSize: 20,                        // mesmo tamanho do ícone pequeno do perfil
     },
     "& .MuiBadge-badge": {
-      transform: "scale(0.85) translate(20%, -20%)", // badge discreto
+      transform: "scale(0.65) translate(60%, -60%)", // badge discreto
     },
   },
 
