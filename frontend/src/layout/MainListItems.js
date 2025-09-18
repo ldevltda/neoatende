@@ -441,6 +441,7 @@ const MainListItems = (props) => {
                   </ListItemIcon>
                   <ListItemText
                       primary={i18n.t("mainDrawer.listItems.flows")}
+                      primaryTypographyProps={{ variant: "body2" }}
                   />
                   {openCampaignSubmenu ? (
                       <ExpandLessIcon />
@@ -463,7 +464,7 @@ const MainListItems = (props) => {
                       <ListItemIcon>
                         <EventAvailableIcon />
                       </ListItemIcon>
-                      <ListItemText primary="Campanha" />
+                      <ListItemText primary="Campanha" primaryTypographyProps={{ variant: "body2" }} />
                     </ListItem>
 
                     <ListItem
@@ -473,7 +474,7 @@ const MainListItems = (props) => {
                       <ListItemIcon>
                         <ShapeLine />
                       </ListItemIcon>
-                      <ListItemText primary="Conversa" />
+                      <ListItemText primary="Conversa" primaryTypographyProps={{ variant: "body2" }} />
                     </ListItem>
                   </List>
                 </Collapse>
