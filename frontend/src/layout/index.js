@@ -62,6 +62,15 @@ const useStyles = makeStyles((theme) => ({
     minHeight: "48px",
     [theme.breakpoints.down("sm")]: { height: "48px" },
   },
+  langColumn: {
+    "& .MuiFormGroup-root": {           // RadioGroup
+      flexDirection: "column",
+    },
+    "& .MuiFormControlLabel-root": {    // cada opção
+      marginLeft: 0,
+      marginRight: 0,
+    },
+  },
   appBar: {
     zIndex: theme.zIndex.drawer + 1,
     transition: theme.transitions.create(["width", "margin"], {
@@ -348,8 +357,8 @@ const LoggedInLayout = ({ children }) => {
                   }
                   label={
                     theme.mode === "dark"
-                      ? (i18n.t("common.darkMode") || "Dark")
-                      : (i18n.t("common.lightMode") || "Light")
+                      ? ("Dark")
+                      : ("Light")
                   }
                 />
               </Box>
@@ -385,7 +394,7 @@ const LoggedInLayout = ({ children }) => {
                 </Typography>
               </Box>
               {/* 7–9: radios idioma */}
-              <Box className={classes.menuBlock} style={{ paddingTop: 6 }}>
+              <Box className={`${classes.menuBlock} ${classes.langColumn}`} style={{ paddingTop: 6 }}>
                 <LanguageControl />
               </Box>
 
