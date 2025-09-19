@@ -73,15 +73,13 @@ import axios from "axios";
 import jwt from "jsonwebtoken";
 
 function makeServiceBearer(companyId: number): string {
+  // mesma ordem do isAuth
   const secret =
-    process.env.SERVICE_JWT_SECRET ||
     process.env.JWT_SECRET ||
-    process.env.JWT_KEY;
+    process.env.JWT_KEY ||
+    process.env.SERVICE_JWT_SECRET;
 
-  if (!secret) {
-    console.error("JWT secret ausente (defina SERVICE_JWT_SECRET ou JWT_SECRET)");
-    return "";
-  }
+  if (!secret) return "";
 
   const payload: any = {
     id: 0,
@@ -696,7 +694,8 @@ type InvState = {
 };
 const invKey = (t: Ticket) => `inventory:state:${t.companyId}:${t.id}`;
 
-// extrai filtros básicos do texto (fallback do cliente)
+// GENÉRICO: tenta extrair filtros universais (preço máx., preço mín., localização leve)
+// Sem amarrar ao domínio; o provedor decide o que usa.
 function extractFiltersFromText(txt: string) {
   const norm = (s: string) =>
     (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -704,26 +703,27 @@ function extractFiltersFromText(txt: string) {
   const t = norm(txt);
   const out: any = {};
 
-  // quartos / dormitórios
-  const mQ = t.match(/(\d+)\s*(quartos?|qts?|dormitorios?)/);
-  if (mQ) out.dormitorios = parseInt(mQ[1], 10);
+  // preço (R$ 500.000 / 500k / até 50000 / entre 10 e 20)
+  const mMax = t.match(/\b(ate|até|maximo|máximo|no max)\s*(r\$|\$)?\s*([\d\.\,kKmM]+)/);
+  if (mMax) out.priceMax = mMax[3];
 
-  // bairro
-  const mB = t.match(/bairro\s*(de|do|da)?\s*([a-z0-9\s\-]+)/);
-  if (mB) out.bairro = mB[2].trim();
+  const mMin = t.match(/\b(apartir|a partir|minimo|min)\s*(r\$|\$)?\s*([\d\.\,kKmM]+)/);
+  if (mMin) out.priceMin = mMin[3];
 
-  // cidade/UF (ex.: sao jose/sc)
-  const mC = t.match(/([a-z\s]+)\/([a-z]{2})/);
-  if (mC) {
-    out.cidade = mC[1].trim();
-    out.uf = mC[2].toUpperCase();
-  }
+  const mBetween = t.match(/\bentre\s*(r\$|\$)?\s*([\d\.\,kKmM]+)\s*(e|a)\s*(r\$|\$)?\s*([\d\.\,kKmM]+)/);
+  if (mBetween) { out.priceMin = mBetween[2]; out.priceMax = mBetween[5]; }
 
-  // cidade sem UF (heurística leve)
-  if (!out.cidade) {
-    const mCidade = t.match(/\b(sao jose|florianopolis|palhoca|biguacu)\b/);
-    if (mCidade) out.cidade = mCidade[1].trim();
-  }
+  // localização leve (bairro/cidade/uf em texto simples)
+  const mUF = t.match(/\b([a-z\s]+)\/([a-z]{2})\b/);
+  if (mUF) { out.city = mUF[1].trim(); out.uf = mUF[2].toUpperCase(); }
+
+  const mCity = t.match(/\b(sao jose|são josé|florianopolis|palhoca|biguacu|joinville|curitiba|porto alegre|rio de janeiro|sao paulo|são paulo)\b/);
+  if (mCity) out.city = mCity[1];
+
+  // termos numéricos com unidade comum (ex.: “tamanho 42”, “memória 16gb”, “2 portas”)
+  const units = ["gb","tb","kg","g","ml","l","cm","mm","pol","\"","'","m2","m²","por tas","portas","nucleos","núcleos","cores","quartos","dormitorios"];
+  const u = units.find(u => t.includes(` ${u}`));
+  if (u) out.unitFilter = (t.match(new RegExp(`(\\d+[\\,\\.]?\\d*)\\s*${u}`)) || [])[0];
 
   return out;
 }
@@ -738,49 +738,86 @@ function isGreetingSmalltalk(txt: string): boolean {
   return /\b(oi|ola|ol[aá]|opa|e ai|eae|fala|bom dia|boa tarde|boa noite|tudo bem|td bem|como vai)\b/.test(t);
 }
 
-function isLikelyInventoryIntent(txt: string): boolean {
-  const t = (txt || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+// === GENÉRICO: keywords do inventário p/ QUALQUER RAMO ===
+// - permite sobrescrita por Setting "inventoryKeywords" (CSV)
+// - inclui base ampla de produtos/serviços + termos comuns de filtros
+async function fetchInventoryKeywords(companyId: number): Promise<string[]> {
+  try {
+    const s = await Setting.findOne({ where: { companyId, key: "inventoryKeywords" } });
+    const custom = (s?.value || "")
+      .split(",").map(v => v.trim().toLowerCase()).filter(Boolean);
 
-  // Sinais de intenção de busca (ajuste livre conforme seu domínio)
-  const keywords = [
-    "apartamento","apto","ape","casa","imovel","imóveis","condominio",
-    "quarto","quartos","dormitorio","dormitorios","vaga","garagem",
-    "bairro","cidade","uf","campinas","kobrasol","barreiros","florianopolis","sao jose",
-    "preco","preço","ate","até","teto","valor","r$","mil","k"
-  ];
-  const hasKW = keywords.some(k => t.includes(k));
+    const generic = [
+      // produtos/serviços
+      "produto","produtos","item","itens","catálogo","catalogo","modelo","modelos",
+      "serviço","servicos","serviços","plano","planos","pacote","pacotes","assinatura",
+      // filtros universais
+      "preço","preco","valor","orçamento","orcamento","promo","oferta","entrega",
+      "tamanho","cor","variação","variacao","versão","versao","marca","modelo",
+      // ações
+      "listar","ver","mostrar","opções","opcoes","disponível","disponiveis","estoque"
+    ];
 
-  // Slots extraídos do texto (se achar bairro/quartos/cidade/uf etc.)
-  const slots = extractFiltersFromText(txt);
-  const hasSlots = slots && Object.keys(slots).length > 0;
+    // extras facultativos para ramos comuns (sem forçar foco):
+    const light_realestate = [
+      "imovel","imóvel","imoveis","imóveis","apartamento","apto","casa","cobertura",
+      "aluguel","venda","condomínio","condominio","quarto","quartos","vaga","garagem","metragem","bairro"
+    ];
+    const light_auto = ["carro","carros","veículo","veiculos","km","ano","portas","flex","hatch","sedan"];
+    const light_fashion = ["camiseta","calça","calca","sapato","tênis","tenis","pp","p","m","g","gg"];
 
-  // Considera intenção se houver palavras do domínio OU slots
-  return hasKW || hasSlots;
+    return [...new Set([...custom, ...generic, ...light_realestate, ...light_auto, ...light_fashion])];
+  } catch {
+    return [
+      "produto","produtos","item","itens","catalogo","catálogo","serviço","servicos",
+      "preço","preco","valor","orçamento","orcamento","listar","opções","opcoes"
+    ];
+  }
 }
 
-function buildDefaultGreeting(contactName?: string) {
-  const nome = (contactName || "Amigo(a)").trim();
+// intenção genérica de inventário
+async function isLikelyInventoryIntent(txt: string, companyId: number): Promise<boolean> {
+  const t = (txt || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+  const kws = await fetchInventoryKeywords(companyId);
+  const hasKW = kws.some(k => t.includes(k));
+
+  // sinais de filtro (qualquer ramo)
+  const hasNumbers   = /\d/.test(t);
+  const hasCurrency  = /(r\$|\$|€|£)/.test(t);
+  const hasRangeWord = /\b(ate|até|entre|de\s+\d+(\.\d+)?\s+a\s+\d+(\.\d+)?|no\s+max|máximo|maximo)\b/.test(t);
+  const wantsList    = /\b(listar|op(c|ç)oes|mostrar|ver)\b/.test(t);
+
+  return hasKW || wantsList || (hasNumbers && (hasRangeWord || hasCurrency));
+}
+
+function buildDefaultGreeting(contactName?: string, brandName?: string) {
+  const nome = (contactName || "tudo bem").trim();
+  const marca = (brandName || "").trim();
+
+  // OBS: Não citamos domínio nenhum aqui.
+  const intro = marca
+    ? `Sou o assistente da ${marca}.`
+    : "Sou seu assistente virtual.";
+
   return [
     `Oi, ${nome}! 👋`,
-    "Sou o assistente da Barbi Imóveis. Posso te ajudar a encontrar um imóvel ou tirar alguma dúvida rápida.",
-    "Se quiser, me diga *bairro* e *faixa de preço* que eu já trago opções 😉"
+    `${intro} Posso te ajudar com o que você precisar.`,
+    "Se preferir, me diga em poucas palavras o que quer fazer e eu já te guio 😉"
   ].join("\n");
 }
 
+// NÃO assume domínio: tenta achar chaves comuns (title/price/url/attrs)
 const formatInventoryReply = (payload: any) => {
   const items: any[] = payload?.items || [];
   const page = payload?.page || 1;
   const pageSize = payload?.pageSize || Math.min(items.length, 5) || 0;
   const total = payload?.total ?? items.length ?? 0;
 
-  // tenta compor um "contexto" de localização pro cabeçalho
   const crit = payload?.criteria || payload?.query?.criteria || {};
   const filtros = payload?.query?.filtros || {};
-  const neighborhood = crit.neighborhood || filtros.neighborhood;
-  const city = crit.city || filtros.city;
-  const state = crit.state || filtros.state;
-
-  const whereBits = [neighborhood, city, state].filter(Boolean).join(", ");
+  const whereBits = [crit.neighborhood || filtros.neighborhood, crit.city || filtros.city, crit.state || filtros.state]
+    .filter(Boolean).join(", ");
   const where = whereBits ? ` em ${whereBits}` : "";
 
   const head = total > 0
@@ -790,39 +827,37 @@ const formatInventoryReply = (payload: any) => {
   const top = items.slice(0, Math.min(pageSize || 5, 5));
 
   const lines = top.map((it, idx) => {
-    const pick = (obj: any, keys: string[]) =>
-      keys.find(k => obj?.[k] != null && obj?.[k] !== "" && obj?.[k] !== "0");
+    const pickKey = (keys: string[]) => keys.find(k => it?.[k] != null && it?.[k] !== "" && it?.[k] !== "0");
 
-    const titleKey = pick(it, ["TituloSite", "Titulo", "title", "Nome", "Descricao", "Descrição"]) || "Codigo";
-    const title = it[titleKey] || it["Codigo"] || it["codigo"] || `Item ${idx + 1}`;
+    const titleKey = pickKey(["title","name","TituloSite","Titulo","Nome","Descrição","Descricao","Codigo","codigo"]) || "title";
+    const title    = String(it[titleKey] ?? `Item ${idx+1}`);
 
-    // localização
-    const bairro = it["Bairro"] || it["bairro"];
-    const cidade = it["Cidade"] || it["cidade"];
-    const uf     = it["UF"] || it["uf"] || it["Estado"] || it["estado"];
+    // preço/link se existirem
+    const priceKey = pickKey(["price","valor","preco","Preço","ValorVenda","Valor","amount"]);
+    const priceStr = priceKey ? `\n💰 ${String(it[priceKey]).toString().replace(/[^\d.,a-zA-Z\$€£R$ ]/g,"")}` : "";
 
-    // atributos comuns
-    const dorm   = it["dormitorios"] || it["Dormitorios"] || it["Quartos"] || it["quartos"];
-    const vagas  = it["vagas"] || it["Vagas"];
-    const area   = it["area"] || it["Area"] || it["Área"] || it["AreaPrivativa"];
-    const price  = it["price"] || it["Preco"] || it["Preço"] || it["ValorVenda"] || it["valor"];
+    const urlKey = pickKey(["url","URL","link","Link","slug"]);
+    const linkStr = urlKey ? `\n🔗 Ver detalhes ➜ ${it[urlKey]}` : "";
 
-    // link/slug
-    const url = it["url"] || it["URL"] || it["link"] || it["Link"] || it["slug"];
+    // atributos “bonitos” quando existirem (genéricos)
+    const attrs: string[] = [];
+    const attrPairs: Array<[string,string]> = [
+      ["color","🎨"],["cor","🎨"],
+      ["size","📏"],["tamanho","📏"],
+      ["memory","💾"],["ram","💾"],["storage","💽"],
+      ["warranty","🛡"],["garantia","🛡"],
+      ["brand","🏷"],["marca","🏷"],
+      ["model","🔧"],["modelo","🔧"],
+      // imobiliário (se vier, mostramos — mas não exigimos)
+      ["dormitorios","🛏"],["quartos","🛏"],["vagas","🚗"],["area","📐"],["metragem","📐"]
+    ];
+    for (const [k, icon] of attrPairs) {
+      if (it[k] != null && String(it[k]).trim() !== "") attrs.push(`${icon} ${it[k]}`);
+    }
 
-    const idxEmoji = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣"][idx] || `${idx + 1}.`;
-    const loc = [bairro, cidade, uf].filter(Boolean).join(", ");
+    const idxEmoji = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣"][idx] || `${idx+1}.`;
 
-    const specBits: string[] = [];
-    if (dorm) specBits.push(`🛏 ${dorm} dormitório(s)`);
-    if (vagas) specBits.push(`🚗 ${vagas} vaga(s)`);
-    if (area) specBits.push(`📐 ${area} m²`);
-
-    const priceStr = price ? `\n💰 ${String(price).replace(/[^\d.,]/g, "")}` : "";
-
-    const linkStr = url ? `\n🔗 Ver detalhes ➜ ${url}` : "";
-
-    return `${idxEmoji} *${title}*${loc ? ` – ${loc}` : ""}\n${specBits.join(" | ")}${priceStr}${linkStr}`;
+    return `${idxEmoji} *${title}*\n${attrs.join(" | ")}${priceStr}${linkStr}`;
   });
 
   const footer = total > page * pageSize
@@ -854,7 +889,15 @@ const handleOpenAi = async (
   const text = (bodyMessage || "").trim();
   const isGreet = isGreetingSmalltalk(text);
 
-  let { prompt } = await ShowWhatsAppService(wbot.id, ticket.companyId);
+const whatsappConn = await ShowWhatsAppService(wbot.id, ticket.companyId);
+let { prompt } = whatsappConn;
+
+// Nome de marca (opcional). Não muda o texto para nenhum segmento.
+const brandName =
+  (whatsappConn?.name && String(whatsappConn.name)) ||
+  process.env.BRAND_NAME ||
+  process.env.APP_NAME ||
+  "";
 
   if( openAiSettings )
     prompt = openAiSettings;
@@ -869,7 +912,7 @@ const handleOpenAi = async (
     // Se for saudação/smalltalk, responde de boas
     if (isGreetingSmalltalk(text)) {
       const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
-        text: buildDefaultGreeting(contact?.name)
+        text: buildDefaultGreeting(contact?.name, brandName)
       });
       await verifyMessage(sentMessage!, ticket, contact);
       return;
@@ -878,8 +921,8 @@ const handleOpenAi = async (
     const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
       text: [
         "Oi! 👋",
-        "Posso te ajudar a buscar um imóvel ou tirar dúvidas.",
-        "Se puder, me diga *bairro* e *faixa de preço* e eu trago algumas opções."
+        "Posso te ajudar com dúvidas ou buscar informações/alternativas para você.",
+        "Se puder, me dê alguns detalhes (ex.: o que procura, faixa de valor, prazo) que eu já avanço por aqui."
       ].join("\n")
     });
     await verifyMessage(sentMessage!, ticket, contact);
@@ -892,10 +935,10 @@ const handleOpenAi = async (
   // ======== INVENTORY AUTO com paginação e filtros (GATED) ========
 
 // Navegação "ver mais" sempre pode acionar inventário (se existir estado)
-const wantMore = /\b(ver mais|mais op(c|ç)oes|proxima pagina|pr[oó]xima p[aá]gina)\b/i.test(text);
+const wantMore = /\b(ver\s+mais|mostrar(\s+mais)?|listar(\s+op(c|ç)oes)?| pr(o|ó)xima\s+p(a|á)gina|manda(r)?\s+(as\s+)?op(c|ç)oes|mais op(c|ç)oes|proxima pagina|pr[oó]xima p[aá]gina|carregar\s+mais)\b/i.test(text);
 
 // Consulta inventário só se: pediu "ver mais" OU intenção clara de busca
-const shouldInventory = wantMore || (!isGreet && isLikelyInventoryIntent(text));
+const shouldInventory = wantMore || (!isGreet && (await isLikelyInventoryIntent(text, ticket.companyId)));
 
 logger.info(
   { ctx: "InventoryAuto", step: "gate", wantMore, isGreet, shouldInventory, ticketId: ticket.id },
@@ -939,18 +982,13 @@ if (shouldInventory) {
       payload.filters = clientFilters;
     }
 
-    // TIMEOUT curto para não travar atendimento
-    const { data: auto } = await axios.post(
-      `${base}/inventory/agent/auto`,
-      payload,
-      {
-        headers: {
-          Authorization: bearer,
-          "Content-Type": "application/json"
-        },
-        timeout: 3500 // <= ajuste fino sugerido
-      }
-    );
+    // inclui openaiKey quando existir no prompt/fila
+    if (prompt?.apiKey) payload.openaiKey = String(prompt.apiKey);
+
+    const { data: auto } = await axios.post(`${base}/inventory/agent/auto`, payload, {
+      headers: { Authorization: bearer, "Content-Type": "application/json" },
+      timeout: 3500
+    });
 
     if ((auto?.items?.length || 0) > 0) {
       const newState: InvState = {
