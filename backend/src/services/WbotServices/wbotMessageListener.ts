@@ -71,6 +71,8 @@ import {differenceInMilliseconds} from "date-fns";
 import Whatsapp from "../../models/Whatsapp";
 import axios from "axios";
 import jwt from "jsonwebtoken";
+import { Planner } from "../AI/Planner";
+import { loadState, saveState } from "../Inventory/ConversationState";
 
 function makeServiceBearer(companyId: number): string {
   // mesma ordem do isAuth
@@ -932,105 +934,91 @@ const brandName =
 
   if (msg.messageStubType) return;
 
-  // ======== INVENTORY AUTO com paginação e filtros (GATED) ========
+  // ======== INVENTORY via PLANNER (LLM) ========
+  const planner = new Planner(prompt?.apiKey);
+  const existing = (await loadState(ticket)) || { page: 0, pageSize: 5, slots: {} };
 
-// Navegação "ver mais" sempre pode acionar inventário (se existir estado)
-const wantMore = /\b(ver\s+mais|mostrar(\s+mais)?|listar(\s+op(c|ç)oes)?| pr(o|ó)xima\s+p(a|á)gina|manda(r)?\s+(as\s+)?op(c|ç)oes|mais op(c|ç)oes|proxima pagina|pr[oó]xima p[aá]gina|carregar\s+mais)\b/i.test(text);
+  const plan = await planner.infer(text, existing.slots || {});
+  logger.info({ ctx: "Planner", plan }, "planner-output");
 
-// Consulta inventário só se: pediu "ver mais" OU intenção clara de busca
-const shouldInventory = wantMore || (!isGreet && (await isLikelyInventoryIntent(text, ticket.companyId)));
-
-logger.info(
-  { ctx: "InventoryAuto", step: "gate", wantMore, isGreet, shouldInventory, ticketId: ticket.id },
-  "inventory gate decision"
-);
-
-if (shouldInventory) {
-  try {
-    const base = (process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "");
-    const bearer = makeServiceBearer(ticket.companyId);
-    const pageSize = 5;
-
-    // carrega estado anterior (se houver)
-    let invState: InvState | null = null;
-    try {
-      const raw = await cacheLayer.get(invKey(ticket));
-      invState = raw ? (JSON.parse(raw) as InvState) : null;
-    } catch { invState = null; }
-
-    // decide texto base, página e filtros
-    let page = 1;
-    let originalText = text;
-    let clientFilters: any = null;
-
-    if (wantMore && invState) {
-      page = invState.page + 1;
-      originalText = invState.originalText;
-      clientFilters = invState.filters || null;
-    } else {
-      clientFilters = extractFiltersFromText(originalText);
-    }
-
-    const payload: any = {
-      companyId: ticket.companyId,
-      text: originalText,
-      page,
-      pageSize
+  if (plan.intent === "browse_inventory") {
+    // atualiza o estado com domínio/slots
+    const newPage = /\b(ver mais|proxima pagina|pr[oó]xima p[aá]gina)\b/i.test(text) ? (existing.page || 0) + 1 : (existing.page || 1);
+    const state = {
+      domain: plan.domain || existing.domain,
+      slots: plan.slots || existing.slots,
+      page: newPage,
+      pageSize: existing.pageSize || 5
     };
+    await saveState(ticket, state);
 
-    if (clientFilters && Object.keys(clientFilters).length) {
-      payload.filters = clientFilters;
-    }
-
-    // inclui openaiKey quando existir no prompt/fila
-    if (prompt?.apiKey) payload.openaiKey = String(prompt.apiKey);
-
-    const { data: auto } = await axios.post(`${base}/inventory/agent/auto`, payload, {
-      headers: { Authorization: bearer, "Content-Type": "application/json" },
-      timeout: 3500
-    });
-
-    if ((auto?.items?.length || 0) > 0) {
-      const newState: InvState = {
-        originalText,
-        page,
-        pageSize,
-        filters: payload.filters ?? clientFilters ?? invState?.filters ?? null
-      };
-      await cacheLayer.set(invKey(ticket), JSON.stringify(newState), "EX", 60 * 30);
-
-      const reply =
-        (auto && typeof auto.previewMessage === "string" && auto.previewMessage.trim())
-          ? auto.previewMessage
-          : formatInventoryReply({ ...auto, page, pageSize });
-
-      const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, { text: reply });
-      await verifyMessage(sentMessage!, ticket, contact);
-      return; // não chama LLM
-    }
-
-    // não houve itens e o usuário pediu "ver mais" -> avisa educadamente
-    if (wantMore) {
-      const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
-        text: "Não tenho mais resultados agora. Quer refinar a busca? Me diga *bairro*, *cidade/UF* e *nº de quartos*."
+    // se não estiver pronto, faça perguntas naturais sugeridas
+    if (!plan.query_ready) {
+      const qs = (plan.followups || []).slice(0, 2); // no máx. 2 por turno
+      if (qs.length) {
+        const sent = await wbot.sendMessage(msg.key.remoteJid!, {
+          text: qs.join("\n")
+        });
+        await verifyMessage(sent!, ticket, contact);
+        return;
+      }
+      // fallback: uma pergunta genérica
+      const sent = await wbot.sendMessage(msg.key.remoteJid!, {
+        text: "Quer me dizer mais alguma preferência importante? (ex.: preço máximo, número de quartos/portas, bairro/marca...)"
       });
-      await verifyMessage(sentMessage!, ticket, contact);
-      return; // não chama LLM
+      await verifyMessage(sent!, ticket, contact);
+      return;
     }
-  } catch (err: any) {
-    logger.error(
-      {
-        ctx: "InventoryAuto",
-        step: "error",
-        error: err?.message,
-        status: err?.response?.status,
-        data: err?.response?.data
-      },
-      "auto call failed (will fallback to LLM)"
-    );
+
+    // pronto para buscar → chama backend genérico
+    try {
+      const base = (process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "");
+      const bearer = makeServiceBearer(ticket.companyId);
+
+      const payload: any = {
+        companyId: ticket.companyId,
+        text,                       // texto atual (para o backend usar se quiser)
+        page: state.page || 1,
+        pageSize: state.pageSize || 5,
+        categoryHint: state.domain, // <- usa a Dica de Categoria
+        filters: state.slots        // <- envia slots como filtros
+      };
+
+      const { data: auto } = await axios.post(
+        `${base}/inventory/agent/auto`,
+        payload,
+        {
+          headers: { Authorization: bearer, "Content-Type": "application/json" },
+          timeout: 8000
+        }
+      );
+
+      // sempre persistir (mantém continuidade)
+      await saveState(ticket, state);
+
+      const total = auto?.items?.length || 0;
+      if (total > 0) {
+        const reply = (auto?.previewMessage && String(auto.previewMessage).trim())
+          ? auto.previewMessage
+          : formatInventoryReply({ ...auto, page: state.page, pageSize: state.pageSize, category: state.domain });
+
+        const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: reply });
+        await verifyMessage(sent!, ticket, contact);
+        return;
+      }
+
+      const sent = await wbot.sendMessage(msg.key.remoteJid!, {
+        text: "Não encontrei resultados com essas preferências. Quer ajustar? Posso filtrar por preço, localização e características."
+      });
+      await verifyMessage(sent!, ticket, contact);
+      return;
+    } catch (err: any) {
+      logger.error({ ctx: "InventoryAuto", error: err?.message, status: err?.response?.status }, "inventory-call-failed");
+      // deixa o LLM responder em texto (cai abaixo)
+    }
   }
-}
-// =============================================================
+  // ======== FIM INVENTORY via PLANNER ========
+
 
   const publicFolder: string = path.resolve(
     __dirname,
