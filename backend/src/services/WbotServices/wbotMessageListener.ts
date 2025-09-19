@@ -981,7 +981,7 @@ const brandName =
         page: state.page || 1,
         pageSize: state.pageSize || 5,
         categoryHint: state.domain, // <- usa a Dica de Categoria
-        filters: state.slots        // <- envia slots como filtros
+        filtros: state.slots        // <- envia slots como filtros
       };
 
       const { data: auto } = await axios.post(

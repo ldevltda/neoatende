@@ -1,19 +1,36 @@
+// backend/src/controllers/InventoryAgentController.ts
 import { Request, Response } from "express";
 import { logger } from "../utils/logger";
 import InventoryIntegration from "../models/InventoryIntegration";
-import { runSearch, RunSearchOutput } from "../services/InventoryServices/RunSearchService";
-import { chooseIntegrationByText } from "../services/InventoryServices/CategoryRouter";
-import { parseCriteriaFromText, filterAndRankItems, paginateRanked } from "../services/InventoryServices/NLFilter";
-import { renderWhatsAppList } from "../services/InventoryServices/Renderers/WhatsAppRenderer";
 
+import {
+  runSearch,
+  RunSearchOutput
+} from "../services/InventoryServices/RunSearchService";
+
+import { chooseIntegrationByText } from "../services/InventoryServices/CategoryRouter";
+import {
+  parseCriteriaFromText,
+  filterAndRankItems,
+  paginateRanked
+} from "../services/InventoryServices/NLFilter";
+
+import { renderWhatsAppList } from "../services/InventoryServices/Renderers/WhatsAppRenderer";
+import { normalizeFilters } from "../services/InventoryServices/FilterNormalizer";
+
+/** Resolve o companyId do token (req.user) ou do body. */
 function resolveCompanyId(req: Request, bodyCompanyId?: number) {
   return (req as any)?.user?.companyId ?? bodyCompanyId;
 }
 
-/** Converte critérios semânticos em filtros genéricos.
- *  Se o provider suportar mapeamento (via filterMap), o RunSearchService traduz.
+/**
+ * Converte critérios semânticos (extraídos do texto) em filtros genéricos.
+ * O RunSearchService traduz esses filtros genéricos para o provedor,
+ * respeitando o rolemap/querymap da integração.
  */
-function buildProviderFiltersFromCriteria(criteria: ReturnType<typeof parseCriteriaFromText>) {
+function buildProviderFiltersFromCriteria(
+  criteria: ReturnType<typeof parseCriteriaFromText>
+) {
   const f: Record<string, any> = {};
 
   // Geo
@@ -65,8 +82,8 @@ function pickProviderItems(out: RunSearchOutput): any[] {
   if (Array.isArray(cand1) && cand1.length) return cand1;
 
   const raw = (out as any)?.raw || {};
-  if (Array.isArray(raw.data)) return raw.data;
-  if (Array.isArray(raw.items)) return raw.items;
+  if (Array.isArray((raw as any).data)) return (raw as any).data;
+  if (Array.isArray((raw as any).items)) return (raw as any).items;
 
   const cand2 = (out as any)?.data;
   if (Array.isArray(cand2)) return cand2;
@@ -77,7 +94,7 @@ function pickProviderItems(out: RunSearchOutput): any[] {
 /** ========= Antigo: /inventory/agent/lookup ========= */
 export const agentLookup = async (req: Request, res: Response) => {
   const t0 = Date.now();
-  const corrId = `${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+  const corrId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   try {
     const {
@@ -89,44 +106,63 @@ export const agentLookup = async (req: Request, res: Response) => {
       pageSize = 5
     } = (req.body || {}) as any;
 
-    logger.info({ corrId, ctx: "AgentLookup", step: "in", integrationId, page, pageSize, text }, "agent_lookup_in");
+    logger.info(
+      { corrId, ctx: "AgentLookup", step: "in", integrationId, page, pageSize, text },
+      "agent_lookup_in"
+    );
 
     const companyId = resolveCompanyId(req, companyIdFromBody);
     if (!companyId || !integrationId) {
-      return res.status(400).json({ error: "MissingParams", message: "companyId/integrationId required" });
+      return res
+        .status(400)
+        .json({ error: "MissingParams", message: "companyId/integrationId required" });
     }
-    const integ = await InventoryIntegration.findOne({ where: { id: integrationId, companyId } });
+
+    const integ = await InventoryIntegration.findOne({
+      where: { id: integrationId, companyId }
+    });
     if (!integ) return res.status(404).json({ error: "IntegrationNotFound" });
 
-    // critérios -> filtros para o provider
+    // 1) extrai critérios do texto
     const criteria = parseCriteriaFromText(text);
-    const filtrosFromCriteria = buildProviderFiltersFromCriteria(criteria);
-    const filtros = { ...filtrosFromCriteria, ...filtrosBody };
 
+    // 2) critérios → filtros genéricos
+    const filtrosFromCriteria = buildProviderFiltersFromCriteria(criteria);
+
+    // 3) merge com filtros do body
+    const filtrosMerged = { ...filtrosFromCriteria, ...filtrosBody };
+
+    // 4) normaliza filtros de ENTRADA com base na categoria/hint
+    const categoryHint = String(integ.get("categoryHint") || "");
+    const filtros = normalizeFilters(categoryHint, filtrosMerged);
+
+    // 5) busca com lote amplo e aplica filtro/rankeamento local
     const out: RunSearchOutput = await runSearch(integ as any, {
       params: {},
       page: 1,
-      pageSize: 100, // lote maior pra dar espaço pro filtro local
+      pageSize: 100, // lote maior para permitir filtragem local robusta
       text,
       filtros
     });
 
     const providerItems = pickProviderItems(out);
 
-    // Filtro LOCAL (hard + rank)
     const ranked = filterAndRankItems(providerItems, criteria);
     const items = paginateRanked(ranked, page, pageSize);
 
-    // mensagem bonita p/ WhatsApp
+    // 6) mensagem em formato WhatsApp
     const criteriaSummaryParts: string[] = [];
     if (criteria.typeHint) criteriaSummaryParts.push(criteria.typeHint);
     const locParts = [criteria.neighborhood, criteria.city, criteria.state].filter(Boolean);
     if (locParts.length) criteriaSummaryParts.push(locParts.join(", "));
-    const criteriaSummary = criteriaSummaryParts.length ? `em *${criteriaSummaryParts.join(", ")}*` : undefined;
+    const criteriaSummary = criteriaSummaryParts.length
+      ? `em *${criteriaSummaryParts.join(", ")}*`
+      : undefined;
+
     const previewMessage = renderWhatsAppList(items, {
       maxItems: Math.min(pageSize, 5),
       criteriaSummary,
-      categoryHint: String(integ.get("categoryHint") || ""),
+      categoryHint,
       showIndexEmojis: true
     });
 
@@ -146,7 +182,7 @@ export const agentLookup = async (req: Request, res: Response) => {
       companyId,
       integrationId: Number(integ.get("id")),
       integrationName: (integ.get("name") as string) || "integration",
-      categoryHint: integ.get("categoryHint"),
+      categoryHint,
       query: { text, filtros, page, pageSize, criteria },
       items,
       total: ranked.length,
@@ -156,15 +192,20 @@ export const agentLookup = async (req: Request, res: Response) => {
       previewMessage
     });
   } catch (err: any) {
-    logger.error({ corrId, ctx: "AgentLookup", step: "error", error: err?.message }, "agent_lookup_err");
-    return res.status(500).json({ error: "AgentLookupFailed", message: err?.message });
+    logger.error(
+      { corrId, ctx: "AgentLookup", step: "error", error: err?.message },
+      "agent_lookup_err"
+    );
+    return res
+      .status(500)
+      .json({ error: "AgentLookupFailed", message: err?.message });
   }
 };
 
 /** ========= Novo: /inventory/agent/auto ========= */
 export const agentAuto = async (req: Request, res: Response) => {
   const t0 = Date.now();
-  const corrId = `${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+  const corrId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   try {
     const {
@@ -187,22 +228,42 @@ export const agentAuto = async (req: Request, res: Response) => {
     const integ = await chooseIntegrationByText(companyId, text);
     if (!integ) {
       logger.info({ corrId, ctx: "AgentAuto", step: "no_match" }, "agent_auto_no_match");
-      return res.json({ companyId, matched: false, reason: "NoIntegrationMatched", items: [], total: 0, page, pageSize });
+      return res.json({
+        companyId,
+        matched: false,
+        reason: "NoIntegrationMatched",
+        items: [],
+        total: 0,
+        page,
+        pageSize
+      });
     }
 
-    logger.info({
-      corrId, ctx: "AgentAuto", step: "choose",
-      integrationId: Number(integ.get("id")),
-      name: String(integ.get("name")),
-      categoryHint: String(integ.get("categoryHint"))
-    }, "agent_auto_chosen");
+    const categoryHint = String(integ.get("categoryHint") || "");
 
-    // 2) critérios -> filtros para o provider
+    logger.info(
+      {
+        corrId,
+        ctx: "AgentAuto",
+        step: "choose",
+        integrationId: Number(integ.get("id")),
+        name: String(integ.get("name")),
+        categoryHint
+      },
+      "agent_auto_chosen"
+    );
+
+    // 2) extrai critérios do texto
     const criteria = parseCriteriaFromText(text);
-    const filtrosFromCriteria = buildProviderFiltersFromCriteria(criteria);
-    const filtros = { ...filtrosFromCriteria, ...filtrosBody };
 
-    // 3) busca lote amplo e aplica filtro local
+    // 3) critérios → filtros genéricos
+    const filtrosFromCriteria = buildProviderFiltersFromCriteria(criteria);
+
+    // 4) merge + normalização de ENTRADA por domínio/categoria
+    const filtrosMerged = { ...filtrosFromCriteria, ...filtrosBody };
+    const filtros = normalizeFilters(categoryHint, filtrosMerged);
+
+    // 5) busca em lote amplo (para permitir filtro/rankeamento local)
     const out: RunSearchOutput = await runSearch(integ as any, {
       params: {},
       page: 1,
@@ -213,20 +274,23 @@ export const agentAuto = async (req: Request, res: Response) => {
 
     const providerItems = pickProviderItems(out);
 
-    // 4) filtra localmente e pagina
+    // 6) filtro + rankeamento local + paginação
     const ranked = filterAndRankItems(providerItems, criteria);
     const items = paginateRanked(ranked, page, pageSize);
 
-    // mensagem bonita p/ WhatsApp
+    // 7) preview WhatsApp
     const criteriaSummaryParts: string[] = [];
     if (criteria.typeHint) criteriaSummaryParts.push(criteria.typeHint);
     const locParts = [criteria.neighborhood, criteria.city, criteria.state].filter(Boolean);
     if (locParts.length) criteriaSummaryParts.push(locParts.join(", "));
-    const criteriaSummary = criteriaSummaryParts.length ? `em *${criteriaSummaryParts.join(", ")}*` : undefined;
+    const criteriaSummary = criteriaSummaryParts.length
+      ? `em *${criteriaSummaryParts.join(", ")}*`
+      : undefined;
+
     const previewMessage = renderWhatsAppList(items, {
       maxItems: Math.min(pageSize, 5),
       criteriaSummary,
-      categoryHint: String(integ.get("categoryHint") || ""),
+      categoryHint,
       showIndexEmojis: true
     });
 
@@ -248,7 +312,7 @@ export const agentAuto = async (req: Request, res: Response) => {
       matched: true,
       integrationId: Number(integ.get("id")),
       integrationName: (integ.get("name") as string) || "integration",
-      categoryHint: integ.get("categoryHint"),
+      categoryHint,
       criteria,
       query: { text, filtros, page, pageSize },
       items,
@@ -259,7 +323,12 @@ export const agentAuto = async (req: Request, res: Response) => {
       previewMessage
     });
   } catch (err: any) {
-    logger.error({ corrId, ctx: "AgentAuto", step: "error", error: err?.message }, "agent_auto_err");
-    return res.status(500).json({ error: "AgentAutoFailed", message: err?.message });
+    logger.error(
+      { corrId, ctx: "AgentAuto", step: "error", error: err?.message },
+      "agent_auto_err"
+    );
+    return res
+      .status(500)
+      .json({ error: "AgentAutoFailed", message: err?.message });
   }
 };

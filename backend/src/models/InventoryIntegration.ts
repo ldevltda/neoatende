@@ -25,12 +25,12 @@ class InventoryIntegration extends Model<InventoryIntegration> {
   @Column(DataType.TEXT)
   name: string;
 
-  // dica de categoria (imovel|carro|produto)
+  /** dica de categoria (imovel|carro|produto|servico...) */
   @Default(null)
   @Column(DataType.TEXT)
   categoryHint: string | null;
 
-  // Endpoint + headers + query/body default
+  /** Endpoint + headers + query/body default */
   @Column(DataType.JSONB)
   endpoint: {
     method: "GET" | "POST";
@@ -41,7 +41,7 @@ class InventoryIntegration extends Model<InventoryIntegration> {
     timeout_s?: number;
   };
 
-  // Auth genérica
+  /** Auth genérica */
   @Column(DataType.JSONB)
   auth: {
     type: "none" | "api_key" | "bearer" | "basic";
@@ -53,42 +53,46 @@ class InventoryIntegration extends Model<InventoryIntegration> {
     password?: string; // basic
   };
 
-  // Paginação
+  /** Paginação (naming por integração) */
   @Column(DataType.JSONB)
   pagination: {
     strategy: "none" | "page" | "offset" | "cursor";
-    page_param?: string;
-    size_param?: string;
-    offset_param?: string;
-    cursor_param?: string;
+    page_param?: string;   // ex.: "page"
+    size_param?: string;   // ex.: "per_page", "limit"
+    offset_param?: string; // quando strategy = offset
+    cursor_param?: string; // quando strategy = cursor
     page_size_default?: number;
   };
 
-  // Resultado da inferência de schema (amostra + caminhos)
+  /** Resultado da inferência de schema (amostra + caminhos) */
   @Default(null)
   @Column(DataType.JSONB)
   schema: Record<string, any> | null;
 
-  // Mapa de papeis (list_path e campos relevantes)
+  /** Papel dos campos (onde achar lista, id, title, etc) + querymap */
   @Default(null)
   @Column(DataType.JSONB)
-  rolemap: {
-    list_path?: string | null;
-    fields?: {
-      id?: string | null;
-      title?: string | null;
-      price?: string | null;
-      images?: string | null; // caminho array: photos[].url
-      status?: string | null;
-      url?: string | null;
-      description?: string | null;
-      location?: {
-        cidade?: string | null;
-        uf?: string | null;
-        bairro?: string | null;
-      };
-    };
-  } | null;
+  rolemap:
+    | {
+        list_path?: string | null;
+        /** mapeamento de filtros canônicos -> nome de parâmetro dessa API */
+        querymap?: Record<string, string> | null;
+        fields?: {
+          id?: string | null;
+          title?: string | null;
+          price?: string | null;
+          images?: string | null; // caminho array: photos[].url
+          status?: string | null;
+          url?: string | null;
+          description?: string | null;
+          location?: {
+            cidade?: string | null;
+            uf?: string | null;
+            bairro?: string | null;
+          };
+        };
+      }
+    | null;
 
   @ForeignKey(() => Company)
   @Column
