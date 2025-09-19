@@ -113,7 +113,7 @@ parse_args() {
     FRONTEND_URL=""
     TOTAL_CPU="2"
     TOTAL_MEMORY="2048"
-    COLOR="#113021"
+    COLOR="#25342d"
     TAB_NAME="Neoatende"
     
     # Variáveis do módulo financeiro
