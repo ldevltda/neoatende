@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
-import { Op } from "sequelize";
 import { logger } from "../utils/logger";
+import { Op } from "sequelize";
 
 import Whatsapp from "../models/Whatsapp";
 import Company from "../models/Company";
@@ -16,7 +16,34 @@ import { createOpenAIClient } from "../libs/openaiClient";
 
 const WEBHOOK_KEY = process.env.WEBHOOK_KEY || "Neoatende@2025$$$";
 
-// — helpers —
+// ---------- helpers de LOG ----------
+const SENSITIVE_HEADERS = ["authorization", "key", "x-api-key", "cookie", "set-cookie"];
+function redact(v: any) {
+  if (v == null) return v;
+  const s = String(v);
+  if (s.length <= 6) return "***";
+  return `${s.slice(0, 3)}***${s.slice(-2)}`;
+}
+function sanitizeHeaders(h: Record<string, any> | undefined) {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(h || {})) {
+    if (SENSITIVE_HEADERS.includes(k.toLowerCase())) {
+      out[k] = Array.isArray(v) ? v.map(redact) : redact(v);
+    } else out[k] = v;
+  }
+  return out;
+}
+function shrink(obj: any, max = 12000) {
+  try {
+    const s = JSON.stringify(obj);
+    if (s.length <= max) return obj;
+    return { _truncated: true, length: s.length, preview: s.slice(0, max) };
+  } catch {
+    return obj;
+  }
+}
+// -----------------------------------
+
 const DIGITS = /\D+/g;
 function normalizeBRPhone(raw?: string | null): string | null {
   if (!raw) return null;
@@ -40,25 +67,87 @@ type LeadBody = {
 };
 
 export const handleIncomingLead = async (req: Request, res: Response): Promise<Response> => {
+  const t0 = process.hrtime.bigint();
+  const requestId = Math.random().toString(36).slice(2, 8);
+
+  // LOG de entrada (headers, query, body)
+  logger.info({
+    ctx: "LeadWebhook",
+    phase: "start",
+    requestId,
+    method: req.method,
+    url: req.originalUrl,
+    ip: req.ip,
+    headers: sanitizeHeaders(req.headers as Record<string, any>),
+    query: shrink(req.query),
+    body: shrink(req.body)
+  });
+
   // 0) auth por header "key"
-  const key = (req.headers["key"] || req.headers["Key"] || req.headers["KEY"]) as string | undefined;
+  const key =
+    (req.headers["key"] ||
+      (req.headers as any)["Key"] ||
+      (req.headers as any)["KEY"]) as string | undefined;
+
   if (!key || key !== WEBHOOK_KEY) {
+    const durationMs = Number((process.hrtime.bigint() - t0) / BigInt(1e6));
+    logger.warn({
+      ctx: "LeadWebhook",
+      phase: "end",
+      requestId,
+      status: 401,
+      reason: "invalid_key",
+      durationMs
+    });
     return res.status(401).json({ ok: false, error: "Invalid key" });
   }
 
   const body = (req.body || {}) as LeadBody;
 
   // 1) validar campos mínimos
-  if (!body.sender) return res.status(422).json({ ok: false, error: "sender is required" });
-  if (!body.phone)  return res.status(422).json({ ok: false, error: "phone is required" });
+  if (!body.sender || !body.phone) {
+    const durationMs = Number((process.hrtime.bigint() - t0) / BigInt(1e6));
+    logger.warn({
+      ctx: "LeadWebhook",
+      phase: "end",
+      requestId,
+      status: 422,
+      reason: "missing_required_fields",
+      missing: { sender: !body.sender, phone: !body.phone },
+      durationMs
+    });
+    return res.status(422).json({ ok: false, error: "sender and phone are required" });
+  }
 
   const phone = normalizeBRPhone(body.phone);
-  if (!phone) return res.status(422).json({ ok: false, error: "invalid phone" });
+  if (!phone) {
+    const durationMs = Number((process.hrtime.bigint() - t0) / BigInt(1e6));
+    logger.warn({
+      ctx: "LeadWebhook",
+      phase: "end",
+      requestId,
+      status: 422,
+      reason: "invalid_phone",
+      rawPhone: body.phone,
+      durationMs
+    });
+    return res.status(422).json({ ok: false, error: "invalid phone" });
+  }
 
   try {
     // 2) localizar conexão pelo "sender" (name == número da conexão)
     const whatsapp = await Whatsapp.findOne({ where: { name: body.sender } });
     if (!whatsapp) {
+      const durationMs = Number((process.hrtime.bigint() - t0) / BigInt(1e6));
+      logger.warn({
+        ctx: "LeadWebhook",
+        phase: "end",
+        requestId,
+        status: 404,
+        reason: "sender_not_found",
+        sender: body.sender,
+        durationMs
+      });
       return res.status(404).json({ ok: false, error: "sender_not_found" });
     }
 
@@ -72,7 +161,17 @@ export const handleIncomingLead = async (req: Request, res: Response): Promise<R
     });
 
     if (existing) {
-      logger.info({ ctx: "LeadWebhook", step: "skip_existing", ticketId: existing.id, phone });
+      const durationMs = Number((process.hrtime.bigint() - t0) / BigInt(1e6));
+      logger.info({
+        ctx: "LeadWebhook",
+        phase: "end",
+        requestId,
+        status: 200,
+        action: "skipped_existing_ticket",
+        ticketId: existing.id,
+        phone,
+        durationMs
+      });
       return res.status(200).json({
         ok: true,
         skipped_existing_ticket: true,
@@ -97,7 +196,7 @@ export const handleIncomingLead = async (req: Request, res: Response): Promise<R
 
     // 6) montar mensagem com IA usando o Prompt da conexão (se existir)
     const wppFull = await ShowWhatsAppService(String(whatsappId), companyId);
-    const promptObj = wppFull.prompt as unknown as Prompt | null;
+    const promptObj = (wppFull as any)?.prompt as Prompt | null;
 
     const openai = createOpenAIClient((promptObj as any)?.apiKey);
     const model = (promptObj as any)?.model || "gpt-4o-mini";
@@ -117,7 +216,7 @@ Jamais solicite dados sensíveis (CPF, RG, etc.) na primeira mensagem.
     const system = [
       systemBase,
       `Tarefa específica: redigir a PRIMEIRA MENSAGEM de abordagem para um novo lead vindo de formulário.
-- Linguagem: amigável, profissional, **curta** (5–8 linhas), com formatação leve (negritos/itens quando ajudar).
+- Linguagem: amigável, profissional, curta (5–8 linhas).
 - Objetivo: agradecer o interesse, contextualizar (imóvel/projeto), confirmar 1–2 dados se necessário, propor o próximo passo e incluir CTA.
 - Se houver "project" ou "description", use-os para personalizar (sem soar robô).
 - Não peça documentos ou fotos. Evite links excessivos.`
@@ -138,8 +237,8 @@ DADOS DO LEAD:
 - Quando pretende mudar: ${body.when || "(não informado)"}
 
 INSTRUÇÕES FINAIS:
-- Termine com um CTA simples convidando para seguir pelo WhatsApp (ex.: "Posso te enviar agora as melhores opções?").
-- Se faltar contexto (ex.: sem projeto), faça uma abertura neutra (sem empurrar link).
+- Termine com um CTA convidando para seguir pelo WhatsApp.
+- Se faltar contexto, faça uma abertura neutra.
 `.trim();
 
     const chat = await openai.chat.completions.create({
@@ -162,14 +261,24 @@ INSTRUÇÕES FINAIS:
       ticket
     } as any);
 
-    // 8) habilitar chatbot no ticket, associar prompt se fizer sentido
+    // 8) habilitar chatbot no ticket, associar prompt (se houver)
     try {
       const updates: any = { chatbot: true };
       if (promptObj?.id) updates.promptId = promptObj.id;
       await ticket.update(updates);
     } catch {}
 
-    logger.info({ ctx: "LeadWebhook", step: "sent", ticketId: ticket.id, to: phone });
+    const durationMs = Number((process.hrtime.bigint() - t0) / BigInt(1e6));
+    logger.info({
+      ctx: "LeadWebhook",
+      phase: "end",
+      requestId,
+      status: 200,
+      action: "sent",
+      ticketId: ticket.id,
+      to: phone,
+      durationMs
+    });
 
     return res.status(200).json({
       ok: true,
@@ -178,7 +287,11 @@ INSTRUÇÕES FINAIS:
       preview_message: text
     });
   } catch (err: any) {
-    logger.error({ ctx: "LeadWebhook", err: String(err?.message || err) }, "webhook error");
+    const durationMs = Number((process.hrtime.bigint() - t0) / BigInt(1e6));
+    logger.error(
+      { ctx: "LeadWebhook", phase: "error", requestId, durationMs, err: String(err?.message || err) },
+      "webhook error"
+    );
     return res.status(500).json({ ok: false, error: "internal_error" });
   }
 };
