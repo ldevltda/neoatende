@@ -1,9 +1,12 @@
 import { Router } from "express";
-import { handleIncomingLead } from "../controllers/LeadWebhookController";
+import { handleIncomingLead, handleIncomingLeadGHL } from "../controllers/LeadWebhookController";
 
 const leadRoutes = Router();
 
-// Webhook público (sem isAuth); usa header "key"
+// genérico (mantém como está)
 leadRoutes.post("/imoveis/envia-primeira-mensagem", handleIncomingLead);
+
+// **específico GHL**
+leadRoutes.post("/imoveis/envia-primeira-mensagem-ghl", handleIncomingLeadGHL);
 
 export default leadRoutes;
