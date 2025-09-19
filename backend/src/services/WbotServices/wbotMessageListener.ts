@@ -1,4 +1,5 @@
-import path, { join } from "path";
+import * as path from "path";
+import { join } from "path";
 import * as Sentry from "@sentry/node";
 import { isNil, isNull, head } from "lodash";
 import { extension as mimeExtension } from "mime-types";
@@ -730,6 +731,42 @@ function extractFiltersFromText(txt: string) {
 // ==== Helpers de inventário (formatação de itens) ====
 const pick = (obj: any, keys: string[]) => keys.find(k => obj?.[k] != null && obj?.[k] !== "" && obj?.[k] !== "0");
 
+// ==== Intent Helpers (greeting/smalltalk & inventory) ====
+function isGreetingSmalltalk(txt: string): boolean {
+  const t = (txt || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  if (!t) return false;
+  return /\b(oi|ola|ol[aá]|opa|e ai|eae|fala|bom dia|boa tarde|boa noite|tudo bem|td bem|como vai)\b/.test(t);
+}
+
+function isLikelyInventoryIntent(txt: string): boolean {
+  const t = (txt || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+  // Sinais de intenção de busca (ajuste livre conforme seu domínio)
+  const keywords = [
+    "apartamento","apto","ape","casa","imovel","imóveis","condominio",
+    "quarto","quartos","dormitorio","dormitorios","vaga","garagem",
+    "bairro","cidade","uf","campinas","kobrasol","barreiros","florianopolis","sao jose",
+    "preco","preço","ate","até","teto","valor","r$","mil","k"
+  ];
+  const hasKW = keywords.some(k => t.includes(k));
+
+  // Slots extraídos do texto (se achar bairro/quartos/cidade/uf etc.)
+  const slots = extractFiltersFromText(txt);
+  const hasSlots = slots && Object.keys(slots).length > 0;
+
+  // Considera intenção se houver palavras do domínio OU slots
+  return hasKW || hasSlots;
+}
+
+function buildDefaultGreeting(contactName?: string) {
+  const nome = (contactName || "Amigo(a)").trim();
+  return [
+    `Oi, ${nome}! 👋`,
+    "Sou o assistente da Barbi Imóveis. Posso te ajudar a encontrar um imóvel ou tirar alguma dúvida rápida.",
+    "Se quiser, me diga *bairro* e *faixa de preço* que eu já trago opções 😉"
+  ].join("\n");
+}
+
 const formatInventoryReply = (payload: any) => {
   const items: any[] = payload?.items || [];
   const page = payload?.page || 1;
@@ -814,6 +851,9 @@ const handleOpenAi = async (
 
   if (!bodyMessage) return;
 
+  const text = (bodyMessage || "").trim();
+  const isGreet = isGreetingSmalltalk(text);
+
   let { prompt } = await ShowWhatsAppService(wbot.id, ticket.companyId);
 
   if( openAiSettings )
@@ -823,16 +863,49 @@ const handleOpenAi = async (
     prompt = ticket.queue.prompt;
   }
 
-  if (!prompt) return;
+  // Se não houver prompt configurado, garante uma resposta amigável (sem travar o fluxo)
+  if (!prompt) {
+    const text = (bodyMessage || "").trim();
+    // Se for saudação/smalltalk, responde de boas
+    if (isGreetingSmalltalk(text)) {
+      const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
+        text: buildDefaultGreeting(contact?.name)
+      });
+      await verifyMessage(sentMessage!, ticket, contact);
+      return;
+    }
+    // Não é saudação, mas ainda não há prompt -> responde genérico para conduzir
+    const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
+      text: [
+        "Oi! 👋",
+        "Posso te ajudar a buscar um imóvel ou tirar dúvidas.",
+        "Se puder, me diga *bairro* e *faixa de preço* e eu trago algumas opções."
+      ].join("\n")
+    });
+    await verifyMessage(sentMessage!, ticket, contact);
+    return;
+  }
+
 
   if (msg.messageStubType) return;
 
-  // ======== INVENTORY AUTO com paginação e filtros ========
+  // ======== INVENTORY AUTO com paginação e filtros (GATED) ========
+
+// Navegação "ver mais" sempre pode acionar inventário (se existir estado)
+const wantMore = /\b(ver mais|mais op(c|ç)oes|proxima pagina|pr[oó]xima p[aá]gina)\b/i.test(text);
+
+// Consulta inventário só se: pediu "ver mais" OU intenção clara de busca
+const shouldInventory = wantMore || (!isGreet && isLikelyInventoryIntent(text));
+
+logger.info(
+  { ctx: "InventoryAuto", step: "gate", wantMore, isGreet, shouldInventory, ticketId: ticket.id },
+  "inventory gate decision"
+);
+
+if (shouldInventory) {
   try {
     const base = (process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "");
     const bearer = makeServiceBearer(ticket.companyId);
-
-    const wantMore = /\b(ver mais|mais op(c|ç)oes|proxima pagina|pr[oó]xima p[aá]gina)\b/i.test(bodyMessage || "");
     const pageSize = 5;
 
     // carrega estado anterior (se houver)
@@ -844,7 +917,7 @@ const handleOpenAi = async (
 
     // decide texto base, página e filtros
     let page = 1;
-    let originalText = bodyMessage!;
+    let originalText = text;
     let clientFilters: any = null;
 
     if (wantMore && invState) {
@@ -862,76 +935,46 @@ const handleOpenAi = async (
       pageSize
     };
 
-    // Caminho A: se o backend aceitar "filters" (ideal)
     if (clientFilters && Object.keys(clientFilters).length) {
       payload.filters = clientFilters;
     }
 
-    // Caminho B: fallback — injeta dica de filtros no texto
-    if (!payload.filters && clientFilters && Object.keys(clientFilters).length) {
-      payload.text = `${originalText}\n\n[filtros]\n- dormitorios: ${clientFilters.dormitorios ?? ""}\n- bairro: ${clientFilters.bairro ?? ""}\n- cidade: ${clientFilters.cidade ?? ""}\n- uf: ${clientFilters.uf ?? ""}`.trim();
-    }
-
-    const t0 = Date.now();
-    logger.info(
-      { ctx: "InventoryAuto", step: "request", companyId: ticket.companyId, text: payload.text, page, pageSize },
-      "calling /inventory/agent/auto"
-    );
-
+    // TIMEOUT curto para não travar atendimento
     const { data: auto } = await axios.post(
       `${base}/inventory/agent/auto`,
       payload,
       {
         headers: {
           Authorization: bearer,
-          "Content-Type": "application/json",
-          Accept: "application/json"
+          "Content-Type": "application/json"
         },
-        timeout: 10000,
-        validateStatus: () => true
+        timeout: 3500 // <= ajuste fino sugerido
       }
     );
 
-    logger.info(
-      {
-        ctx: "InventoryAuto",
-        step: "response",
-        tookMs: Date.now() - t0,
-        matched: !!auto?.matched,
-        total: auto?.total ?? (auto?.items?.length || 0),
-        status: auto?.status ?? 200
-      },
-      "auto finished"
-    );
-
-    // houve itens → envia, salva estado e sai
-    if (auto?.matched && (auto?.items?.length || 0) > 0) {
-      // salva estado p/ próxima página
+    if ((auto?.items?.length || 0) > 0) {
       const newState: InvState = {
         originalText,
         page,
         pageSize,
         filters: payload.filters ?? clientFilters ?? invState?.filters ?? null
       };
-      await cacheLayer.set(invKey(ticket), JSON.stringify(newState), "EX", 60 * 30); // 30min
+      await cacheLayer.set(invKey(ticket), JSON.stringify(newState), "EX", 60 * 30);
 
-      // ajusta rodapé de "ver mais" com base em total x página
-      // usa o previewMessage do backend se vier; senão, cai no fallback local
       const reply =
         (auto && typeof auto.previewMessage === "string" && auto.previewMessage.trim())
           ? auto.previewMessage
           : formatInventoryReply({ ...auto, page, pageSize });
 
       const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, { text: reply });
-
       await verifyMessage(sentMessage!, ticket, contact);
       return; // não chama LLM
     }
 
-    // não houve itens:
+    // não houve itens e o usuário pediu "ver mais" -> avisa educadamente
     if (wantMore) {
       const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
-        text: "Não tenho mais resultados para mostrar agora. Quer refinar a busca? Me diga *bairro*, *cidade/UF* e *nº de quartos*."
+        text: "Não tenho mais resultados agora. Quer refinar a busca? Me diga *bairro*, *cidade/UF* e *nº de quartos*."
       });
       await verifyMessage(sentMessage!, ticket, contact);
       return; // não chama LLM
@@ -948,7 +991,8 @@ const handleOpenAi = async (
       "auto call failed (will fallback to LLM)"
     );
   }
-  // =============================================================
+}
+// =============================================================
 
   const publicFolder: string = path.resolve(
     __dirname,
