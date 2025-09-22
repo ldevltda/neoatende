@@ -89,15 +89,22 @@ async function callRunSearch(args: any) {
   throw new Error("RunSearchService: nenhuma função exportada encontrada.");
 }
 
-/** EXPORT NOMEADO (compat com import { handleOpenAi }) */
-export const handleOpenAi = async ({
+/* ============================= WRAPPER COMPAT ============================== */
+type HandleParams = { msg: proto.IWebMessageInfo; wbot: any; ticket: any; contact: any; };
+
+function normalizeArgs(args: any[]): HandleParams {
+  if (args.length === 1 && args[0] && typeof args[0] === "object" && "msg" in args[0]) {
+    return args[0] as HandleParams; // formato objeto
+  }
+  const [msg, wbot, ticket, contact] = args;        // formato posicional
+  return { msg, wbot, ticket, contact } as HandleParams;
+}
+/* ========================================================================== */
+
+/** Núcleo do agente (lógica principal) */
+const handleOpenAiCore = async ({
   msg, wbot, ticket, contact
-}: {
-  msg: proto.IWebMessageInfo;
-  wbot: any;
-  ticket: any;
-  contact: any;
-}): Promise<void> => {
+}: HandleParams): Promise<void> => {
   try {
     if (contact?.disableBot) return;
 
@@ -275,5 +282,12 @@ export const handleOpenAi = async ({
   }
 };
 
-/** EXPORT DEFAULT (compat com import handleOpenAi from ...) */
+/** Export nomeado — aceita objeto OU posicional via wrapper */
+export const handleOpenAi = async (...args: any[]) => {
+  const params = normalizeArgs(args);
+  if (!params?.ticket) throw new Error("handleOpenAi: ticket indefinido na chamada");
+  return handleOpenAiCore(params);
+};
+
+/** Export default — compat com `import handleOpenAi from ...` */
 export default handleOpenAi;
