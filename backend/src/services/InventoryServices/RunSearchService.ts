@@ -1,330 +1,201 @@
-// backend/src/services/InventoryServices/RunSearchService.ts
-import axios, { AxiosRequestConfig } from "axios";
-import { logger } from "../../utils/logger";
-import InventoryIntegration from "../../models/InventoryIntegration";
+import OpenAI from "openai";
 
-/** ===== Tipos ===== */
-export type AuthConfig =
-  | { type: "none" }
-  | { type: "api_key"; in: "header" | "query"; name: string; prefix?: string; key: string }
-  | { type: "bearer"; token: string }
-  | { type: "basic"; username: string; password: string };
+/**
+ * Planner LLM-first com cache e “short-circuit” opcional para saudações.
+ *
+ * ENV:
+ *   OPENAI_API_KEY                (obrigatório)
+ *   OPENAI_MODEL                  (fallback gpt-4o-mini)
+ *   AI_PLANNER_MODEL              (modelo só para classificar, ex: gpt-4o-mini)
+ *   AI_PLANNER_MAX_TOKENS=320
+ *   AI_PLANNER_TEMPERATURE=0
+ *   AI_PLANNER_GREETING_FAST=true     // não chama LLM para “oi/olá…”
+ *   AI_PLANNER_MIN_CONF=0.6
+ */
 
-export type EndpointConfig = {
-  method: string;
-  url: string;
-  headers?: Record<string, string>;
-  /** legado */
-  defaults?: Record<string, any>;
-  /** atuais */
-  default_query?: Record<string, any>;
-  default_body?: Record<string, any>;
-  timeout_s?: number;
+type PlanInput = {
+  text: string;
+  last_state?: Record<string, any>;
+  model?: string;
+  systemPrompt?: string;   // persona do cadastro
 };
 
-export type PaginationConfig =
-  | { type: "none" }
-  | { type: "page"; param?: string; sizeParam?: string }
-  | { type: "offset"; param?: string; sizeParam?: string }
-  | { type: "cursor"; param?: string; cursorPath?: string; sizeParam?: string };
-
-export type IntegrationLike = {
-  id: number | string;
-  get: (key: string) => any;
+export type PlanOutput = {
+  intent: "smalltalk" | "browse_inventory" | "handoff" | "other";
+  confidence: number;      // 0..1
+  query_ready: boolean;
+  slots: {
+    tipo?: string;
+    cidade?: string;
+    bairro?: string;
+    precoMin?: number;
+    precoMax?: number;
+    quartos?: number;
+    [k: string]: any;
+  };
+  missing_slots: string[];
+  followups: string[];
 };
 
-export type RunSearchInput = {
-  params?: Record<string, any>;
-  page?: number;
-  pageSize?: number;
-  text?: string;            // ecoado pelo controller se quiser
-  filtros?: Record<string, any>;
-};
+// ---------- cache em memória com TTL ----------
+const LRU: Map<string, { exp: number; value: PlanOutput }> = new Map();
+const TTL_MS = 5 * 60 * 1000; // 5 min
 
-export type RunSearchOutput = {
-  items: any[];
-  total?: number;
-  page: number;
-  pageSize: number;
-  raw: any;
-};
-
-/** ===== Utils ===== */
-function deepGet(obj: any, path: string, fallback?: any) {
-  try {
-    if (!path) return fallback;
-    const parts = path.split(".");
-    let cur = obj;
-    for (const p of parts) {
-      if (cur == null) return fallback;
-      cur = cur[p];
-    }
-    return cur ?? fallback;
-  } catch {
-    return fallback;
+function cacheGet(key: string): PlanOutput | null {
+  const hit = LRU.get(key);
+  if (!hit) return null;
+  if (Date.now() > hit.exp) { LRU.delete(key); return null; }
+  return hit.value;
+}
+function cacheSet(key: string, value: PlanOutput) {
+  LRU.set(key, { exp: Date.now() + TTL_MS, value });
+  // contenção simples
+  if (LRU.size > 5000) {
+    const first = LRU.keys().next().value;
+    if (first) LRU.delete(first);
   }
 }
 
-function applyAuthToRequest(cfg: AxiosRequestConfig, auth: AuthConfig | undefined | null) {
-  if (!auth || auth.type === "none") return;
-  cfg.headers = cfg.headers || {};
-  cfg.params = cfg.params || {};
-  switch (auth.type) {
-    case "api_key": {
-      const value = auth.prefix ? `${auth.prefix}${auth.key}` : auth.key;
-      if (auth.in === "header") (cfg.headers as any)[auth.name] = value;
-      else (cfg.params as any)[auth.name] = value;
-      break;
-    }
-    case "bearer":
-      (cfg.headers as any)["Authorization"] = `Bearer ${auth.token}`;
-      break;
-    case "basic": {
-      const b64 = Buffer.from(`${auth.username}:${auth.password}`).toString("base64");
-      (cfg.headers as any)["Authorization"] = `Basic ${b64}`;
-      break;
-    }
-  }
+const GREET_RE = /(^|\s)(oi|ol[aá]|e[ai]|bom dia|boa tarde|boa noite)(!|\.|,|\s|$)/i;
+
+function normalizeText(t: string) {
+  return (t || "").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-function normalizeItems(items: any[], rolemap?: any): any[] {
-  if (!Array.isArray(items)) return [];
-  if (!rolemap || typeof rolemap !== "object") return items;
+function fewShots(): string {
+  // exemplos curtos que ensinam o formato/limites
+  return [
+    `Exemplo 1:
+Usuário: "oi, tudo bem?"
+JSON:
+{"intent":"smalltalk","confidence":0.95,"query_ready":false,"slots":{},"missing_slots":[],"followups":["Como posso ajudar?"]}`,
 
-  // Suporta rolemap novo ({ fields: { k: "path" | {path} } }) e antigo ({ k: "path" })
-  let mapping: Record<string, string> = {};
-  if (rolemap.fields && typeof rolemap.fields === "object") {
-    for (const [k, v] of Object.entries(rolemap.fields as Record<string, any>)) {
-      if (typeof v === "string") mapping[k] = v;
-      else if (v && typeof v === "object" && typeof (v as any).path === "string") {
-        mapping[k] = (v as any).path;
-      }
-    }
-  } else {
-    mapping = rolemap as Record<string, string>;
-  }
-  if (!Object.keys(mapping).length) return items;
+    `Exemplo 2:
+Usuário: "quero um apartamento 2 quartos no centro até 500k"
+JSON:
+{"intent":"browse_inventory","confidence":0.92,"query_ready":true,"slots":{"tipo":"apartamento","quartos":2,"bairro":"centro","precoMax":500000},"missing_slots":[],"followups":[]}`,
 
-  const stripRoot = (p: string) => String(p).replace(/^\$\./, "");
+    `Exemplo 3:
+Usuário: "me transfere para humano por favor"
+JSON:
+{"intent":"handoff","confidence":0.9,"query_ready":false,"slots":{},"missing_slots":[],"followups":[]}`,
 
-  return items.map(src => {
-    const dst: Record<string, any> = {};
-    for (const [toKey, fromPathRaw] of Object.entries(mapping)) {
-      if (!fromPathRaw) continue;
-      const fromPath = stripRoot(fromPathRaw);
-      const val = deepGet(src, fromPath, undefined);
-      if (val !== undefined) dst[toKey] = val;
-    }
-    return Object.keys(dst).length ? dst : src;
-  });
+    `Exemplo 4:
+Usuário: "procurando opções, mas não sei região ainda"
+JSON:
+{"intent":"browse_inventory","confidence":0.75,"query_ready":false,"slots":{},"missing_slots":["regiao_ou_bairro"],"followups":["Pode me dizer a região/bairro e a faixa de preço?"]}`
+  ].join("\n\n");
 }
 
-/** Extrai items/total respeitando schema, inclusive "$.*" (dicionário numerado) */
-function extractFromResponse(
-  respData: any,
-  schema?: { itemsPath?: string; totalPath?: string }
-): { items: any[]; total?: number } {
-  const itemsPath = schema?.itemsPath || "data.items";
-  const totalPath = schema?.totalPath || "data.total";
+export async function plan({ text, last_state, model, systemPrompt }: PlanInput): Promise<PlanOutput> {
+  const raw = String(text || "");
+  const t = normalizeText(raw);
 
-  if (itemsPath === "$.*") {
-    if (Array.isArray(respData)) {
-      return { items: respData, total: deepGet(respData, totalPath, undefined) };
-    }
-    if (respData && typeof respData === "object") {
-      const items = Object.keys(respData)
-        .filter(k => /^\d+$/.test(k))
-        .map(k => (respData as any)[k])
-        .filter(v => v && typeof v === "object");
-      const total =
-        deepGet(respData, totalPath, undefined) ??
-        (typeof (respData as any).total === "number" ? (respData as any).total : undefined);
-      return { items, total };
-    }
-    return { items: [], total: undefined };
-  }
-
-  const items = deepGet(respData, itemsPath, Array.isArray(respData) ? respData : []);
-  const total =
-    deepGet(respData, totalPath, undefined) ??
-    (Array.isArray(items) ? items.length : undefined);
-  return { items: Array.isArray(items) ? items : [], total };
-}
-
-/** Normaliza paginação salva como {strategy,page_param,size_param} -> {type,param,sizeParam} */
-function normalizePaginationShape(pag: any): PaginationConfig | undefined {
-  if (!pag) return undefined;
-  if ((pag as any).type) return pag as PaginationConfig;
-  if ((pag as any).strategy) {
-    const typeMap: any = { page: "page", offset: "offset", cursor: "cursor", none: "none" };
+  // 1) atalho barato para saudações, se habilitado
+  if ((process.env.AI_PLANNER_GREETING_FAST || "true").toLowerCase() === "true" && GREET_RE.test(t)) {
     return {
-      type: typeMap[pag.strategy] || "none",
-      param: pag.page_param || (pag.strategy === "offset" ? "offset" : "page"),
-      sizeParam: pag.size_param || (pag.strategy === "offset" ? "limit" : "pageSize")
+      intent: "smalltalk",
+      confidence: 0.95,
+      query_ready: false,
+      slots: {},
+      missing_slots: [],
+      followups: ["Como posso ajudar?"]
     };
   }
-  return pag as PaginationConfig;
-}
 
-function applyPagination(
-  planned: Record<string, any>,
-  pagination: PaginationConfig | undefined,
-  page: number,
-  pageSize: number
-) {
-  if (!pagination || pagination.type === "none") return;
-  const pName = pagination.param || (pagination.type === "offset" ? "offset" : "page");
-  const sName = pagination.sizeParam || (pagination.type === "offset" ? "limit" : "pageSize");
-  if (pagination.type === "page") {
-    planned[pName] = page;
-    planned[sName] = pageSize;
-  } else if (pagination.type === "offset") {
-    planned[pName] = Math.max(0, (page - 1) * pageSize);
-    planned[sName] = pageSize;
-  }
-}
+  // 2) cache
+  const cacheKey = `plan:v2:${t}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
 
-/** ===== Executor principal (seu core) ===== */
-export async function runSearch(
-  integration: IntegrationLike,
-  { params = {}, page = 1, pageSize = 10, text, filtros = {} }: RunSearchInput
-): Promise<RunSearchOutput> {
-  const integrationId = (integration as any)?.id ?? integration?.get?.("id");
-
-  const endpoint: EndpointConfig = (integration as any).get("endpoint");
-  const auth: AuthConfig = (integration as any).get("auth");
-  const rawPagination: any = (integration as any).get("pagination");
-  const pagination = normalizePaginationShape(rawPagination);
-  const rolemap: any = (integration as any).get("rolemap");
-  const schema: { itemsPath?: string; totalPath?: string } | undefined = (integration as any).get("schema");
-
-  const method = (endpoint?.method || "GET").toUpperCase();
-  const url = endpoint?.url;
-  const timeout = (endpoint?.timeout_s || 30) * 1000;
-
-  const defaults =
-    method === "GET"
-      ? endpoint?.default_query || endpoint?.defaults || {}
-      : endpoint?.default_body || endpoint?.defaults || {};
-
-  const plannedParams: Record<string, any> = {
-    ...(defaults || {}),
-    ...(params || {}),
-    ...(filtros || {})
-  };
-
-  applyPagination(plannedParams, pagination, page, pageSize);
-
-  if (
-    Object.prototype.hasOwnProperty.call(plannedParams, "pesquisa") &&
-    typeof plannedParams.pesquisa === "object"
-  ) {
-    plannedParams.pesquisa = JSON.stringify(plannedParams.pesquisa);
+  // 3) chamada LLM
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    // fallback quando chave não está presente
+    const fallback: PlanOutput = {
+      intent: "smalltalk",
+      confidence: 0.5,
+      query_ready: false,
+      slots: {},
+      missing_slots: [],
+      followups: []
+    };
+    return fallback;
   }
 
-  logger.debug(
-    {
-      ctx: "RunSearchService",
-      integrationId,
-      method,
-      url,
-      hasDefaults:
-        !!endpoint?.default_query || !!endpoint?.default_body || !!endpoint?.defaults,
-      hasAuth: !!auth && (auth as any).type !== "none",
-      paginationType: pagination?.type || "none",
-      page,
-      pageSize,
-      plannedParams
-    },
-    "calling provider"
-  );
+  const client = new OpenAI({ apiKey });
+  const clfModel = process.env.AI_PLANNER_MODEL || process.env.OPENAI_MODEL || model || "gpt-4o-mini";
+  const maxTokens = Number(process.env.AI_PLANNER_MAX_TOKENS || "320");
+  const temperature = Number(process.env.AI_PLANNER_TEMPERATURE || "0");
+  const minConf = Number(process.env.AI_PLANNER_MIN_CONF || "0.6");
 
-  const reqCfg: AxiosRequestConfig = {
-    method,
-    url,
-    timeout,
-    headers: { ...(endpoint?.headers || {}) },
-    ...(method === "GET" ? { params: plannedParams } : { data: plannedParams })
-  };
+  const persona = (systemPrompt || "").trim();
 
-  applyAuthToRequest(reqCfg, auth);
+  const system = [
+    persona ? `${persona}\n` : "",
+    `Você é um **roteador de intenções** e extrator de critérios em pt-BR.
+Tarefas:
+1) Determine "intent" ∈ {"smalltalk","browse_inventory","handoff","other"}.
+2) Preencha "slots" quando pertinente (tipo, cidade, bairro, precoMin, precoMax, quartos).
+3) "query_ready": true quando já dá para consultar a API; senão, liste "missing_slots" e "followups" claros.
+4) Responda **apenas** com JSON válido, sem texto extra.
 
-  const t0 = Date.now();
-  let responseData: any;
-  try {
-    const resp = await axios.request(reqCfg);
-    responseData = resp.data;
-    logger.debug(
-      { ctx: "RunSearchService", integrationId, status: resp.status, ms: Date.now() - t0 },
-      "provider response"
-    );
-  } catch (err: any) {
-    logger.error(
-      {
-        ctx: "RunSearchService",
-        integrationId,
-        status: err?.response?.status,
-        ms: Date.now() - t0,
-        error: err?.message,
-        data: err?.response?.data
-      },
-      "provider error"
-    );
-    throw err;
-  }
+${fewShots()}
+`
+  ].join("\n");
 
-  const { items, total } = extractFromResponse(responseData, schema);
-  const normalized = normalizeItems(items, rolemap);
+  const user = `Mensagem do usuário: """${raw}"""`;
 
-  logger.debug(
-    {
-      ctx: "RunSearchService",
-      integrationId,
-      extractedItems: Array.isArray(items) ? items.length : 0,
-      normalizedItems: Array.isArray(normalized) ? normalized.length : 0,
-      total
-    },
-    "normalized result"
-  );
-
-  return {
-    items: normalized,
-    total,
-    page,
-    pageSize,
-    raw: responseData
-  };
-}
-
-/** ===== Adaptador de compatibilidade esperado pelo handleOpenAi =====
- *  - aceita { companyId, integrationId, criteria, page, limit, sort, locale }
- *  - carrega a integração e delega para runSearch
- */
-export async function run(args: {
-  companyId: number;
-  integrationId?: number | null;
-  criteria?: Record<string, any>;
-  page?: number;
-  limit?: number;
-  sort?: string;
-  locale?: string;
-}) {
-  const { companyId, integrationId, criteria = {}, page = 1, limit = 10, sort, locale } = args || ({} as any);
-
-  const where: any = { companyId };
-  if (integrationId) where.id = integrationId;
-
-  const integration = await InventoryIntegration.findOne({ where, order: [["id", "ASC"]] });
-  if (!integration) throw new Error("Nenhuma integração de inventário encontrada para esta empresa.");
-
-  const res = await runSearch(integration as any, {
-    params: { ...criteria, sort, locale },
-    page,
-    pageSize: limit
+  const resp = await client.chat.completions.create({
+    model: clfModel,
+    temperature,
+    max_tokens: maxTokens,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user }
+    ]
   });
 
-  return { items: res.items, total: res.total ?? res.items.length, raw: res.raw };
+  const content = resp.choices?.[0]?.message?.content?.trim() || "{}";
+  let out: PlanOutput;
+
+  try {
+    const parsed = JSON.parse(content);
+    out = {
+      intent: parsed.intent || "other",
+      confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0.6,
+      query_ready: !!parsed.query_ready,
+      slots: parsed.slots || {},
+      missing_slots: Array.isArray(parsed.missing_slots) ? parsed.missing_slots : [],
+      followups: Array.isArray(parsed.followups) ? parsed.followups : []
+    };
+  } catch {
+    // fallback bem conservador
+    out = {
+      intent: "smalltalk",
+      confidence: 0.55,
+      query_ready: false,
+      slots: {},
+      missing_slots: [],
+      followups: []
+    };
+  }
+
+  // conservador: se confiança baixa, degrade para smalltalk
+  if (out.confidence < minConf && out.intent === "browse_inventory") {
+    out = {
+      intent: "smalltalk",
+      confidence: 0.6,
+      query_ready: false,
+      slots: {},
+      missing_slots: [],
+      followups: ["Me conte um pouco mais pra eu entender melhor 🙂"]
+    };
+  }
+
+  cacheSet(cacheKey, out);
+  return out;
 }
 
-/** default export, também aceito pelo handleOpenAi */
-export default run;
+export default { plan };

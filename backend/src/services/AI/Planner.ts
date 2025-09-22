@@ -1,26 +1,28 @@
 import OpenAI from "openai";
 
 /**
- * Planejador de intenção híbrido (regras + LLM).
- * - Primeiro passa por heurísticas determinísticas (barato e rápido).
- * - Se ainda assim houver dúvida, usa o LLM pra classificar e extrair slots.
+ * Planner LLM-first com cache e “short-circuit” opcional para saudações.
  *
- * Env tunáveis:
- *   AI_PLANNER_MODE = "rules-only" | "hybrid" (default: "hybrid")
- *   AI_PLANNER_MIN_CONF = 0.6
- *   OPENAI_MODEL (fallback gpt-4o-mini)
+ * ENV:
+ *   OPENAI_API_KEY                (obrigatório)
+ *   OPENAI_MODEL                  (fallback gpt-4o-mini)
+ *   AI_PLANNER_MODEL              (modelo só para classificar, ex: gpt-4o-mini)
+ *   AI_PLANNER_MAX_TOKENS=320
+ *   AI_PLANNER_TEMPERATURE=0
+ *   AI_PLANNER_GREETING_FAST=true     // não chama LLM para “oi/olá…”
+ *   AI_PLANNER_MIN_CONF=0.6
  */
 
 type PlanInput = {
   text: string;
   last_state?: Record<string, any>;
   model?: string;
-  systemPrompt?: string; // persona do cadastro (opcional, mas recomendado)
+  systemPrompt?: string;   // persona do cadastro
 };
 
-type PlanOutput = {
+export type PlanOutput = {
   intent: "smalltalk" | "browse_inventory" | "handoff" | "other";
-  confidence: number; // 0..1
+  confidence: number;      // 0..1
   query_ready: boolean;
   slots: {
     tipo?: string;
@@ -35,205 +37,165 @@ type PlanOutput = {
   followups: string[];
 };
 
-const GREET_RE = /(^|\s)(oi|ol[aá]|e[ai]|bom dia|boa tarde|boa noite)(!|\.|,|\s|$)/i;
-const THANKS_RE = /\b(obrigad[ao]|valeu)\b/i;
+// ---------- cache em memória com TTL ----------
+const LRU: Map<string, { exp: number; value: PlanOutput }> = new Map();
+const TTL_MS = 5 * 60 * 1000; // 5 min
 
-/** Palavras que disparam forte o “estoque” (imóveis/produtos genérico) */
-const INV_TRIGGERS = [
-  "imóv", "imovel", "apart", "casa", "kitnet", "sobrado",
-  "alugar", "aluguel", "comprar", "vender",
-  "estoque", "produto", "disponível", "disponiveis",
-  "preço", "valor", "metrag", "quartos", "suíte", "garagem",
-  "bairro", "centro", "região", "localização"
-];
-
-/** Heurística determinística inicial */
-function rulesHeuristic(text: string): PlanOutput | null {
-  const t = (text || "").toLowerCase().trim();
-
-  // Saudações → smalltalk
-  if (GREET_RE.test(t)) {
-    return {
-      intent: "smalltalk",
-      confidence: 0.9,
-      query_ready: false,
-      slots: {},
-      missing_slots: [],
-      followups: []
-    };
+function cacheGet(key: string): PlanOutput | null {
+  const hit = LRU.get(key);
+  if (!hit) return null;
+  if (Date.now() > hit.exp) { LRU.delete(key); return null; }
+  return hit.value;
+}
+function cacheSet(key: string, value: PlanOutput) {
+  LRU.set(key, { exp: Date.now() + TTL_MS, value });
+  // contenção simples
+  if (LRU.size > 5000) {
+    const first = LRU.keys().next().value;
+    if (first) LRU.delete(first);
   }
-
-  // Agradecimentos → smalltalk
-  if (THANKS_RE.test(t)) {
-    return {
-      intent: "smalltalk",
-      confidence: 0.8,
-      query_ready: false,
-      slots: {},
-      missing_slots: [],
-      followups: []
-    };
-  }
-
-  // Contagem de gatilhos de inventário
-  const trigHits = INV_TRIGGERS.reduce((acc, w) => acc + (t.includes(w) ? 1 : 0), 0);
-
-  // “ver mais” etc. (paginador) — a camada superior já trata, mas aqui evita ruído
-  if (/^(ver mais|mais|próxima|proxima|next)$/i.test(t)) {
-    return {
-      intent: "other",
-      confidence: 0.9,
-      query_ready: false,
-      slots: {},
-      missing_slots: [],
-      followups: []
-    };
-  }
-
-  // Se muitos gatilhos, já tende a inventário
-  if (trigHits >= 2) {
-    const slots: PlanOutput["slots"] = {};
-    // regras simples pra extrair numerais e dinheiro
-    const quartos = t.match(/(\d+)\s*(qtd|qts|quartos?)/i) || t.match(/(\d+)\s*quartos?/i);
-    if (quartos) slots.quartos = Number(quartos[1]);
-
-    const maxMatch = t.match(/(até|no máximo|max)\s*([\d\.\,]+[kKmM]?)/i);
-    const minMatch = t.match(/(a partir de|mínimo|min)\s*([\d\.\,]+[kKmM]?)/i);
-
-    const toNumber = (s: string) => {
-      const raw = s.replace(/[^\d,\.kKmM]/g, "");
-      if (/k$/i.test(raw)) return Math.round(parseFloat(raw) * 1000);
-      if (/m$/i.test(raw)) return Math.round(parseFloat(raw) * 1000000);
-      return Number(raw.replace(/\./g, "").replace(",", "."));
-    };
-
-    if (maxMatch) slots.precoMax = toNumber(maxMatch[2]);
-    if (minMatch) slots.precoMin = toNumber(minMatch[2]);
-
-    // cidade/bairro muito rudimentar (NLFilter depois refina)
-    const bairro = t.match(/\b(bairro\s+([a-z\u00C0-\u017F\s]+))$/i);
-    if (bairro) slots.bairro = bairro[2].trim();
-
-    return {
-      intent: "browse_inventory",
-      confidence: 0.65, // suficiente se ainda vier o classificador
-      query_ready: true,
-      slots,
-      missing_slots: [],
-      followups: []
-    };
-  }
-
-  // caso contrário, trata como smalltalk/other e delega pro LLM decidir
-  return null;
 }
 
-/** Classificação com LLM (OpenAI) — robusto mas opcional */
-async function llmClassify(text: string, systemPrompt?: string, modelOverride?: string): Promise<PlanOutput | null> {
+const GREET_RE = /(^|\s)(oi|ol[aá]|e[ai]|bom dia|boa tarde|boa noite)(!|\.|,|\s|$)/i;
+
+function normalizeText(t: string) {
+  return (t || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function fewShots(): string {
+  // exemplos curtos que ensinam o formato/limites
+  return [
+    `Exemplo 1:
+Usuário: "oi, tudo bem?"
+JSON:
+{"intent":"smalltalk","confidence":0.95,"query_ready":false,"slots":{},"missing_slots":[],"followups":["Como posso ajudar?"]}`,
+
+    `Exemplo 2:
+Usuário: "quero um apartamento 2 quartos no centro até 500k"
+JSON:
+{"intent":"browse_inventory","confidence":0.92,"query_ready":true,"slots":{"tipo":"apartamento","quartos":2,"bairro":"centro","precoMax":500000},"missing_slots":[],"followups":[]}`,
+
+    `Exemplo 3:
+Usuário: "me transfere para humano por favor"
+JSON:
+{"intent":"handoff","confidence":0.9,"query_ready":false,"slots":{},"missing_slots":[],"followups":[]}`,
+
+    `Exemplo 4:
+Usuário: "procurando opções, mas não sei região ainda"
+JSON:
+{"intent":"browse_inventory","confidence":0.75,"query_ready":false,"slots":{},"missing_slots":["regiao_ou_bairro"],"followups":["Pode me dizer a região/bairro e a faixa de preço?"]}`
+  ].join("\n\n");
+}
+
+export async function plan({ text, last_state, model, systemPrompt }: PlanInput): Promise<PlanOutput> {
+  const raw = String(text || "");
+  const t = normalizeText(raw);
+
+  // 1) atalho barato para saudações, se habilitado
+  if ((process.env.AI_PLANNER_GREETING_FAST || "true").toLowerCase() === "true" && GREET_RE.test(t)) {
+    return {
+      intent: "smalltalk",
+      confidence: 0.95,
+      query_ready: false,
+      slots: {},
+      missing_slots: [],
+      followups: ["Como posso ajudar?"]
+    };
+  }
+
+  // 2) cache
+  const cacheKey = `plan:v2:${t}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  // 3) chamada LLM
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;
+  if (!apiKey) {
+    // fallback quando chave não está presente
+    const fallback: PlanOutput = {
+      intent: "smalltalk",
+      confidence: 0.5,
+      query_ready: false,
+      slots: {},
+      missing_slots: [],
+      followups: []
+    };
+    return fallback;
+  }
 
   const client = new OpenAI({ apiKey });
-  const model = modelOverride || process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const clfModel = process.env.AI_PLANNER_MODEL || process.env.OPENAI_MODEL || model || "gpt-4o-mini";
+  const maxTokens = Number(process.env.AI_PLANNER_MAX_TOKENS || "320");
+  const temperature = Number(process.env.AI_PLANNER_TEMPERATURE || "0");
+  const minConf = Number(process.env.AI_PLANNER_MIN_CONF || "0.6");
+
   const persona = (systemPrompt || "").trim();
 
-  const sys =
-    (persona ? `${persona}\n\n` : "") +
-    `Você é um roteador de intenções. Classifique a mensagem do usuário (pt-BR) para:
-- "smalltalk": saudações, conversa geral, agradecimentos
-- "browse_inventory": quando há interesse em listar/consultar itens (imóveis/produtos), extrair critérios
-- "handoff": quando claramente pede humano
-Retorne JSON estrito: { "intent": "...", "confidence": 0..1, "slots": { ... }, "query_ready": bool, "missing_slots": [..], "followups": [..] }.
-Nunca invente, só infira quando for claro.`.trim();
+  const system = [
+    persona ? `${persona}\n` : "",
+    `Você é um **roteador de intenções** e extrator de critérios em pt-BR.
+Tarefas:
+1) Determine "intent" ∈ {"smalltalk","browse_inventory","handoff","other"}.
+2) Preencha "slots" quando pertinente (tipo, cidade, bairro, precoMin, precoMax, quartos).
+3) "query_ready": true quando já dá para consultar a API; senão, liste "missing_slots" e "followups" claros.
+4) Responda **apenas** com JSON válido, sem texto extra.
 
-  const user = `Mensagem: """${text}"""`;
+${fewShots()}
+`
+  ].join("\n");
+
+  const user = `Mensagem do usuário: """${raw}"""`;
 
   const resp = await client.chat.completions.create({
-    model,
-    temperature: 0,
+    model: clfModel,
+    temperature,
+    max_tokens: maxTokens,
+    response_format: { type: "json_object" },
     messages: [
-      { role: "system", content: sys },
+      { role: "system", content: system },
       { role: "user", content: user }
     ]
   });
 
-  const content = resp.choices?.[0]?.message?.content?.trim();
-  if (!content) return null;
+  const content = resp.choices?.[0]?.message?.content?.trim() || "{}";
+  let out: PlanOutput;
 
   try {
-    const json = JSON.parse(content) as Partial<PlanOutput>;
-    // saneamento
-    const out: PlanOutput = {
-      intent: (json.intent as any) || "other",
-      confidence: typeof json.confidence === "number" ? Math.max(0, Math.min(1, json.confidence)) : 0.5,
-      query_ready: !!json.query_ready,
-      slots: (json.slots || {}) as any,
-      missing_slots: Array.isArray(json.missing_slots) ? json.missing_slots : [],
-      followups: Array.isArray(json.followups) ? json.followups : []
+    const parsed = JSON.parse(content);
+    out = {
+      intent: parsed.intent || "other",
+      confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0.6,
+      query_ready: !!parsed.query_ready,
+      slots: parsed.slots || {},
+      missing_slots: Array.isArray(parsed.missing_slots) ? parsed.missing_slots : [],
+      followups: Array.isArray(parsed.followups) ? parsed.followups : []
     };
-    return out;
   } catch {
-    // se não for JSON puro, tenta um fallback simples
-    if (/browse_inventory/.test(content)) {
-      return { intent: "browse_inventory", confidence: 0.6, query_ready: true, slots: {}, missing_slots: [], followups: [] };
-    }
-    if (/smalltalk/.test(content)) {
-      return { intent: "smalltalk", confidence: 0.6, query_ready: false, slots: {}, missing_slots: [], followups: [] };
-    }
-    return null;
-  }
-}
-
-/** API pública */
-export async function plan({ text, last_state, model, systemPrompt }: PlanInput): Promise<PlanOutput> {
-  const mode = (process.env.AI_PLANNER_MODE || "hybrid").toLowerCase();
-  const minConf = Number(process.env.AI_PLANNER_MIN_CONF || "0.6");
-
-  // 1) regras primeiro
-  const rules = rulesHeuristic(text);
-  if (mode === "rules-only" && rules) return rules;
-
-  // 2) se regras já foram fortes o suficiente e intenção não é inventário por engano, devolve
-  if (rules && rules.intent !== "browse_inventory") return rules;
-
-  // 3) se estamos inclinados a inventário, valida com LLM (ou complementa)
-  let llm: PlanOutput | null = null;
-  if (mode !== "rules-only") {
-    try {
-      llm = await llmClassify(text, systemPrompt, model);
-    } catch {
-      llm = null;
-    }
+    // fallback bem conservador
+    out = {
+      intent: "smalltalk",
+      confidence: 0.55,
+      query_ready: false,
+      slots: {},
+      missing_slots: [],
+      followups: []
+    };
   }
 
-  // Combinação final
-  if (!llm && rules) return rules;
-
-  if (llm && rules && rules.intent === "browse_inventory" && llm.intent !== "browse_inventory") {
-    // conflito: prioriza llm se confiança alta, senão fica em smalltalk
-    if (llm.confidence >= minConf) return llm;
-    return { intent: "smalltalk", confidence: 0.55, query_ready: false, slots: {}, missing_slots: [], followups: [] };
+  // conservador: se confiança baixa, degrade para smalltalk
+  if (out.confidence < minConf && out.intent === "browse_inventory") {
+    out = {
+      intent: "smalltalk",
+      confidence: 0.6,
+      query_ready: false,
+      slots: {},
+      missing_slots: [],
+      followups: ["Me conte um pouco mais pra eu entender melhor 🙂"]
+    };
   }
 
-  if (llm) {
-    // garante followups quando query_ready = false
-    const fu = llm.followups && llm.followups.length
-      ? llm.followups
-      : llm.intent === "browse_inventory" && !llm.query_ready
-        ? ["Pode me dizer tipo, região/bairro e orçamento aproximado para eu filtrar melhor?"]
-        : [];
-    return { ...llm, followups: fu };
-  }
-
-  // fallback total
-  return {
-    intent: "smalltalk",
-    confidence: 0.5,
-    query_ready: false,
-    slots: {},
-    missing_slots: [],
-    followups: []
-  };
+  cacheSet(cacheKey, out);
+  return out;
 }
 
 export default { plan };
