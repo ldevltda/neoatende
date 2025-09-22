@@ -1,364 +1,285 @@
 // backend/src/services/WbotServices/listeners/handleOpenAi.ts
 import OpenAI from "openai";
-import { Planner } from "../../AI/Planner";
+import * as Planner from "../../AI/Planner";
 import { loadState, saveState } from "../../InventoryServices/ConversationState";
-import OpenAIRolemapService from "../../InventoryServices/OpenAIRolemapService";
-import { sanitizeName, keepOnlySpecifiedChars, ensurePublicFolder, deleteFileSync } from "./helpers";
-import ffmpeg from "fluent-ffmpeg";
-import fs from "fs";
-import axios from "axios";
+import * as InventoryFormatter from "../../InventoryServices/InventoryFormatter";
+import * as RunSearchService from "../../InventoryServices/RunSearchService";
+import * as NLFilter from "../../InventoryServices/NLFilter";
+import InventoryIntegration from "../../../models/InventoryIntegration";
+import { sanitizeName, keepOnlySpecifiedChars } from "./helpers";
 import { logger } from "../../../utils/logger";
 import { proto } from "baileys";
+import { RateLimiter } from "../../AI/RateLimiter";
+import { maskPII } from "../../AI/Sanitize";
+import { shouldTransferToHuman } from "../../AI/TransferPolicy";
+import { LongTermMemory } from "../../AI/LongTermMemory";
 
 interface ChatMsg { role: "system" | "user" | "assistant"; content: string; }
 
 const sessionsOpenAi: { id?: number; client: OpenAI }[] = [];
+const limiter = RateLimiter.forGlobal();
 
-/** Wrapper: converte o OpenAIRolemapService (objeto) em uma função simples que retorna string */
-async function simpleReply(args: { systemRole: string; userText: string; fallback: string }): Promise<string> {
-  try {
-    // O default export é um objeto com método inferFromSamplePayload
-    const res: any = await OpenAIRolemapService.inferFromSamplePayload({
-      sample: {
-        systemRole: args.systemRole,
-        userText: args.userText
-      }
-    });
-    // tenta extrair o texto em diferentes campos comuns
-    return res?.text ?? res?.reply ?? res?.message ?? args.fallback;
-  } catch {
-    return args.fallback;
+async function getOpenAiClient(companyId: number) {
+  if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY not set");
+  let session = sessionsOpenAi.find(s => s.id === companyId);
+  if (!session) {
+    session = { id: companyId, client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) };
+    sessionsOpenAi.push(session);
   }
+  return session.client;
 }
 
-export async function handleOpenAi(
-  msg: proto.IWebMessageInfo,
-  wbot: any,
-  ticket: any,
-  contact: any,
-  mediaSent?: any,
-  ticketTraking?: any,
-  openAiSettings: any = null
-): Promise<void> {
-  if (contact?.disableBot) return;
+function buildDefaultGreeting(name?: string, brand?: string) {
+  const who = sanitizeName(name || "tudo bem?");
+  const b = keepOnlySpecifiedChars(brand || "nossa equipe");
+  return `Olá ${who}! 👋 Eu sou o assistente virtual da ${b}. Como posso ajudar hoje?`;
+}
 
-  const bodyMessage =
-    msg && msg.message
-      ? ((msg.message.conversation || msg.message.extendedTextMessage?.text) as string)
+async function callPlanner(args: any) {
+  const anyPlanner: any = Planner as any;
+  if (typeof anyPlanner.plan === "function") return anyPlanner.plan(args);
+  if (anyPlanner.default && typeof anyPlanner.default.plan === "function") {
+    return anyPlanner.default.plan(args);
+  }
+  const text: string = (args?.text || "").toLowerCase();
+  const inv = /(im[óo]vel|apart|casa|estoque|produto|carro|ve[ií]culo|agenda|hor[aá]rio|pre[çc]o|dispon[ií]vel)/.test(text);
+  return {
+    intent: inv ? "browse_inventory" : "smalltalk",
+    query_ready: inv,
+    slots: {},
+    missing_slots: [],
+    followups: inv ? [] : ["Me conta um pouco mais, por favor."]
+  };
+}
+
+async function chooseIntegrationByTextCompat(companyId: number, text: string) {
+  const list = await InventoryIntegration.findAll({ where: { companyId, isActive: true }, order: [["id", "ASC"]] });
+  if (!list.length) return null;
+  if (list.length === 1) return list[0];
+
+  const t = (text || "").toLowerCase();
+  const scored = list.map(intg => {
+    const hint = (intg.categoryHint || "").toLowerCase();
+    let score = 0;
+    if (hint && t.includes(hint)) score += 2;
+    if (/im[óo]veis|imovel|apart|casa/.test(t) && /im[óo]veis|imovel/.test(hint)) score += 1;
+    if (/carro|ve[ií]culo/.test(t) && /carro|ve[ií]culo|auto|veiculo/.test(hint)) score += 1;
+    if (/agenda|hor[aá]rio/.test(t) && /agenda|calendar/.test(hint)) score += 1;
+    return { intg, score };
+  }).sort((a,b) => b.score - a.score);
+
+  return (scored[0]?.score || 0) > 0 ? scored[0].intg : list[0];
+}
+
+async function callParseCriteria(companyId: number, text: string, slots: any) {
+  const anyNL: any = NLFilter as any;
+  if (typeof anyNL.parseCriteriaFromText === "function") {
+    try { return await anyNL.parseCriteriaFromText(text); } catch {}
+    try { return await anyNL.parseCriteriaFromText(companyId, text); } catch {}
+    try { return await anyNL.parseCriteriaFromText(companyId, text, slots); } catch {}
+  }
+  return { query: text };
+}
+
+async function callRunSearch(args: any) {
+  const anyRS: any = RunSearchService as any;
+  if (typeof anyRS.run === "function") return anyRS.run(args);
+  if (typeof anyRS.default === "function") return anyRS.default(args);
+  if (typeof anyRS === "function") return anyRS(args);
+  throw new Error("RunSearchService: nenhuma função exportada encontrada.");
+}
+
+export default async function handleOpenAi({
+  msg, wbot, ticket, contact
+}: {
+  msg: proto.IWebMessageInfo;
+  wbot: any;
+  ticket: any;
+  contact: any;
+}): Promise<void> {
+  try {
+    if (contact?.disableBot) return;
+
+    await limiter.consume(`ai:${ticket.companyId}`, 1);
+
+    const bodyMessage =
+      msg && msg.message
+        ? ((msg.message.conversation || msg.message.extendedTextMessage?.text) as string)
+        : "";
+
+    if (!bodyMessage) return;
+    const text = (bodyMessage || "").trim();
+
+    const companyId = ticket.companyId;
+    const client = await getOpenAiClient(companyId);
+    const ltm = new LongTermMemory(process.env.OPENAI_API_KEY!);
+    const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+
+    // Memória curta + LONGA (contact)
+    const convoState: any = await loadState(ticket.id).catch(() => null);
+    const longMem = await ltm.read(companyId, contact?.id);
+
+    // ---- Contexto com memória longa (injetado no prompt) ----
+    const memoryContext = longMem.length
+      ? `Memória do cliente: ${longMem.map(m => `${m.key}=${m.value}`).join(", ")}`
       : "";
 
-  if (!bodyMessage) return;
+    // 1) Planner (com memória como dica)
+    const plan = await callPlanner({
+      text: `${maskPII(text)}\n${memoryContext ? `\n[Contexto]\n${memoryContext}` : ""}`,
+      last_state: convoState?.state || {},
+      model
+    });
 
-  const text = (bodyMessage || "").trim();
+    logger.info({
+      ctx: "OpenAIPlanner",
+      ticketId: ticket.id,
+      companyId,
+      intent: plan.intent,
+      query_ready: plan.query_ready,
+      slots: plan.slots,
+      missing: plan.missing_slots
+    });
 
-  const whatsappConn = await (await import("../../WhatsappService/ShowWhatsAppService"))
-    .default(wbot.id, ticket.companyId)
-    .catch(() => null);
+    // 2) Sem intenção → follow-up
+    if (!plan.intent || plan.intent === "other") {
+      const sent = await wbot.sendMessage(msg.key.remoteJid!, {
+        text: `Entendi. Você poderia me contar um pouco mais para eu te ajudar melhor?`
+      });
+      try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
+      return;
+    }
 
-  let prompt = whatsappConn?.prompt || null;
-  if (openAiSettings) prompt = openAiSettings;
-  if (!prompt && !ticket?.queue?.prompt) prompt = ticket?.queue?.prompt;
+    // 3) Smalltalk → resposta direta (usa memória longa no system)
+    if (plan.intent === "smalltalk") {
+      const messages: ChatMsg[] = [
+        { role: "system", content: "Você é um atendente simpático, útil e objetivo. Responda em pt-BR." },
+      ];
+      if (memoryContext) messages.push({ role: "system", content: memoryContext });
+      if (convoState?.history?.length) messages.push(...(convoState.history as ChatMsg[]));
 
-  const isGreet = /\b(oi|ola|ol[aá]|opa|e ai|eae|fala|bom dia|boa tarde|boa noite|tudo bem|td bem|como vai)\b/i.test(text);
+      const chat = await client.chat.completions.create({
+        model,
+        temperature: 0.4,
+        max_tokens: 256,
+        messages: [
+          ...messages,
+          { role: "user", content: maskPII(text) }
+        ]
+      });
 
-  if (!prompt) {
+      const answer = chat.choices?.[0]?.message?.content?.trim();
+      if (!answer) return;
+
+      if (shouldTransferToHuman(answer)) {
+        await wbot.sendMessage(msg.key.remoteJid!, { text: "Vou te transferir para um atendente humano para te ajudar melhor. 🙏" });
+        return;
+      }
+
+      const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: answer });
+      try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
+
+      // EXTRAÇÃO DE MEMÓRIA LONGA (fatos) da interação
+      try {
+        const facts = await ltm.extractFactsPtBR(text, answer);
+        if (facts?.length) await ltm.upsert(companyId, contact?.id, facts);
+      } catch {}
+
+      await saveState(ticket.id, {
+        ...(convoState || {}),
+        history: [
+          ...(convoState?.history || []),
+          { role: "user", content: text },
+          { role: "assistant", content: answer }
+        ].slice(-12)
+      } as any);
+      return;
+    }
+
+    // 4) Inventário — usar memória para completar critérios
+    if (plan.intent === "browse_inventory") {
+      const chosen = await chooseIntegrationByTextCompat(companyId, text);
+      const baseCriteria = await callParseCriteria(companyId, text, plan.slots || {});
+
+      // Completa com memória (ex.: bairro_interesse → bairro)
+      for (const mem of longMem) {
+        if (mem.key === "bairro_interesse" && !baseCriteria.bairro) baseCriteria.bairro = mem.value;
+        if (mem.key === "cidade_interesse" && !baseCriteria.cidade) baseCriteria.cidade = mem.value;
+        if (mem.key === "orcamento_max" && !baseCriteria.precoMax) baseCriteria.precoMax = mem.value;
+        if (mem.key === "orcamento_min" && !baseCriteria.precoMin) baseCriteria.precoMin = mem.value;
+        if (mem.key === "tipo_imovel" && !baseCriteria.tipo) baseCriteria.tipo = mem.value;
+        if (mem.key === "produto_interesse" && !baseCriteria.produto) baseCriteria.produto = mem.value;
+      }
+
+      if (!plan.query_ready || (plan.missing_slots && plan.missing_slots.length)) {
+        const follow = (plan.followups && plan.followups[0])
+          || `Perfeito! Pode me dizer mais detalhes (ex.: faixa de preço, região ou característica importante)?`;
+        const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: follow });
+        try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
+        return;
+      }
+
+      const searchRes = await callRunSearch({
+        companyId,
+        integrationId: chosen?.id,
+        criteria: baseCriteria,
+        page: 1,
+        limit: 10,
+        sort: "relevance:desc",
+        locale: "pt-BR"
+      });
+
+      const payload = {
+        items: searchRes.items || [],
+        total: searchRes.total || 0,
+        criteria: baseCriteria
+      };
+
+      const renderedText = (InventoryFormatter as any).formatInventoryReply
+        ? (InventoryFormatter as any).formatInventoryReply(payload)
+        : JSON.stringify(payload, null, 2);
+
+      const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: renderedText || "Não encontrei opções ideais ainda. Me dê mais detalhes?" });
+      try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
+
+      // EXTRAÇÃO DE MEMÓRIA LONGA após resposta
+      try {
+        const facts = await ltm.extractFactsPtBR(text, renderedText);
+        if (facts?.length) await ltm.upsert(companyId, contact?.id, facts);
+      } catch {}
+
+      await saveState(ticket.id, {
+        ...(convoState || {}),
+        history: [
+          ...(convoState?.history || []),
+          { role: "user", content: text },
+          { role: "assistant", content: renderedText }
+        ].slice(-12)
+      } as any);
+
+      return;
+    }
+
+    // 5) fallback simpático
+    const isGreet = /^oi|ol[aá]|bom dia|boa tarde|boa noite/i.test(text);
     if (isGreet) {
       const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
         text: buildDefaultGreeting(contact?.name, process.env.BRAND_NAME || process.env.APP_NAME)
       });
-      const { verifyMessage } = await import("./mediaHelpers").catch(() => ({ verifyMessage: null as any }));
-      if (verifyMessage) await verifyMessage(sentMessage, ticket, contact);
+      try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sentMessage, ticket, contact); } catch {}
       return;
     }
 
-    const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
-      text: [
-        "Oi! 👋",
-        "Posso te ajudar com dúvidas ou buscar informações/alternativas para você.",
-        "Se puder, me dê alguns detalhes (ex.: o que procura, faixa de valor, prazo) que eu já avanço por aqui."
-      ].join("\n")
+    const sent = await wbot.sendMessage(msg.key.remoteJid!, {
+      text: "Posso te ajudar com dúvidas ou buscar informações/alternativas para você. Me conte um pouco mais! 🙂"
     });
-    const { verifyMessage } = await import("./mediaHelpers").catch(() => ({ verifyMessage: null as any }));
-    if (verifyMessage) await verifyMessage(sentMessage, ticket, contact);
-    return;
+    try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
+  } catch (err: any) {
+    logger.error({ ctx: "handleOpenAi", err: err?.message || err });
+    try {
+      await wbot.sendMessage(msg.key.remoteJid!, {
+        text: "Tive um problema para responder agora. Vou te transferir para um atendente humano, tudo bem? 🙏"
+      });
+    } catch {}
   }
-
-  if (msg.messageStubType) return;
-
-  // ===== inventory via Planner =====
-  try {
-    const planner = new Planner(prompt?.apiKey);
-    const existing: any = (await loadState(ticket)) || { mode: "smalltalk", page: 1, pageSize: 5, slots: {} };
-
-    const textNorm = String(text || "").trim();
-
-    const isGreeting = (s: string) =>
-      /\b(oi|ola|ol[aá]|opa|e ai|eae|fala|bom dia|boa tarde|boa noite|tudo bem|td bem|como vai)\b/i.test(s);
-    const isThanks = (s: string) => /\b(obrigad[oa]|vlw|valeu|thanks)\b/i.test(s);
-    const likelyInventory = (s: string) =>
-      /\b(produto|item|lista|listar|im[óo]vel|venda|aluguel|pre[çc]o|preco)\b/i.test(s);
-
-    if (isGreeting(textNorm) && existing.mode !== "inventory") {
-      const welcome = await simpleReply({
-        systemRole: "Você é um atendente imobiliário simpático, breve e objetivo.",
-        userText: textNorm,
-        fallback: "Olá! Tudo bem? Posso te ajudar a encontrar um imóvel. Prefere aluguel ou compra?"
-      });
-      await saveState(ticket as any, { ...existing, mode: "smalltalk" } as any);
-      const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: welcome });
-      const { verifyMessage } = await import("./mediaHelpers").catch(() => ({ verifyMessage: null as any }));
-      if (verifyMessage) await verifyMessage(sent, ticket, contact);
-      return;
-    }
-
-    if (isThanks(textNorm) && !likelyInventory(textNorm)) {
-      const thanks = await simpleReply({
-        systemRole: "Você é um atendente cordial.",
-        userText: textNorm,
-        fallback: "Imagina! Qualquer coisa é só falar 😊"
-      });
-      const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: thanks });
-      const { verifyMessage } = await import("./mediaHelpers").catch(() => ({ verifyMessage: null as any }));
-      if (verifyMessage) await verifyMessage(sent, ticket, contact);
-      return;
-    }
-
-    const plan: any = await planner.infer(textNorm, existing.slots || {});
-    logger.info({ ctx: "Planner", plan }, "planner-output");
-
-    const intent = String(plan?.intent || "");
-
-    if (intent === "browse_inventory" && existing.mode !== "inventory" && !likelyInventory(textNorm)) {
-      const reply = await simpleReply({
-        systemRole: "Você é um atendente humano e natural.",
-        userText: textNorm,
-        fallback: "Me conta rapidinho: cidade/bairro, tipo do imóvel e um orçamento aproximado?"
-      });
-      await saveState(ticket as any, { ...existing, mode: "smalltalk" } as any);
-      const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: reply });
-      const { verifyMessage } = await import("./mediaHelpers").catch(() => ({ verifyMessage: null as any }));
-      if (verifyMessage) await verifyMessage(sent, ticket, contact);
-      return;
-    }
-
-    // book_visit handling
-    if (intent === "book_visit") {
-      const idx = plan?.slots?.indice || plan?.slots?.numero || null;
-      const last = existing.lastList || [];
-      const mapping = existing.lastMapping || {};
-
-      if (!idx) {
-        const ask =
-          "Perfeito! Qual opção você quer visitar? Pode me dizer o número (1, 2, 3...) ou enviar o link.";
-        const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: ask });
-        const { verifyMessage } = await import("./mediaHelpers").catch(() => ({ verifyMessage: null as any }));
-        if (verifyMessage) await verifyMessage(sent, ticket, contact);
-        await saveState(ticket as any, { ...existing, mode: "booking" } as any);
-        return;
-      }
-      const key = mapping[Number(idx)];
-      const chosen =
-        last.find((i: any) => i.codigo === key || i.slug === key || i.url === key) ||
-        last[Number(idx) - 1];
-      if (!chosen) {
-        const sorry =
-          "Não achei essa opção. Pode me mandar o número que aparece na lista ou o link do imóvel?";
-        const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: sorry });
-        const { verifyMessage } = await import("./mediaHelpers").catch(() => ({ verifyMessage: null as any }));
-        if (verifyMessage) await verifyMessage(sent, ticket, contact);
-        return;
-      }
-
-      const ok = `Show! Vou falar com o corretor e já retorno com horários para visita em: ${chosen.title} – ${chosen.url}`;
-      const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: ok });
-      const { verifyMessage } = await import("./mediaHelpers").catch(() => ({ verifyMessage: null as any }));
-      if (verifyMessage) await verifyMessage(sent, ticket, contact);
-      await saveState(ticket as any, { ...existing, mode: "smalltalk" } as any);
-      return;
-    }
-
-    // browse_inventory (search)
-    if (intent === "browse_inventory") {
-      const newPage = /\b(ver mais|proxima pagina|pr[oó]xima p[aá]gina)\b/i.test(textNorm)
-        ? (existing.page || 1) + 1
-        : (existing.page || 1);
-
-      const state: any = {
-        mode: "inventory",
-        domain: plan.domain || existing.domain || "imóveis",
-        slots: { ...existing.slots, ...(plan.slots || {}) },
-        page: newPage,
-        pageSize: existing.pageSize || 5,
-        lastList: existing.lastList || [],
-        lastMapping: existing.lastMapping || {}
-      };
-      await saveState(ticket as any, state as any);
-
-      if (!plan.query_ready) {
-        const qs = (plan.followups || []).slice(0, 2);
-        const txt = qs.length
-          ? qs.join("\n")
-          : "Quer me dizer suas preferências? (ex.: orçamento, nº de quartos, bairro/cidade)";
-        const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: txt });
-        const { verifyMessage } = await import("./mediaHelpers").catch(() => ({ verifyMessage: null as any }));
-        if (verifyMessage) await verifyMessage(sent, ticket, contact);
-        return;
-      }
-
-      try {
-        const base = (process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "");
-        const bearer = `Bearer ${(process.env.SERVICE_JWT_SECRET || "").toString()}`;
-
-        const payload: any = {
-          companyId: ticket.companyId,
-          text: textNorm,
-          page: state.page || 1,
-          pageSize: state.pageSize || 5,
-          categoryHint: state.domain,
-          filtros: state.slots
-        };
-
-        const { data: auto } = await axios.post(`${base}/inventory/agent/auto`, payload, {
-          headers: { Authorization: bearer, "Content-Type": "application/json" },
-          timeout: 8000
-        });
-
-        const mapping: Record<number, string> = {};
-        (auto.items || []).forEach((it: any, i: number) => {
-          mapping[i + 1] = it.codigo || it.slug || it.url;
-        });
-
-        const state2: any = { ...state, lastList: auto.items || [], lastMapping: mapping };
-        await saveState(ticket as any, state2 as any);
-
-        const total = auto?.items?.length || 0;
-        if (total > 0) {
-          const reply =
-            auto?.previewMessage && String(auto.previewMessage).trim()
-              ? auto.previewMessage
-              : formatInventoryReply({
-                  ...auto,
-                  page: state.page,
-                  pageSize: state.pageSize,
-                  category: state.domain
-                });
-
-          const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: reply });
-          const { verifyMessage } = await import("./mediaHelpers").catch(() => ({ verifyMessage: null as any }));
-          if (verifyMessage) await verifyMessage(sent, ticket, contact);
-          return;
-        }
-
-        const sent = await wbot.sendMessage(msg.key.remoteJid!, {
-          text:
-            "Não encontrei resultados com essas preferências. Quer ajustar? Posso filtrar por preço, localização e características."
-        });
-        const { verifyMessage } = await import("./mediaHelpers").catch(() => ({ verifyMessage: null as any }));
-        if (verifyMessage) await verifyMessage(sent, ticket, contact);
-        return;
-      } catch (err: any) {
-        logger.error(
-          { ctx: "InventoryAuto", error: err?.message, status: err?.response?.status },
-          "inventory-call-failed"
-        );
-      }
-    }
-
-    // fallback small talk via LLM
-    {
-      const reply = await simpleReply({
-        systemRole: "Você é um atendente humano, prestativo, que oferece ajuda em imóveis.",
-        userText: textNorm,
-        fallback: "Claro! Quer me dizer o que procura? cidade/bairro, tipo e orçamento aproximado."
-      });
-      const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: reply });
-      const { verifyMessage } = await import("./mediaHelpers").catch(() => ({ verifyMessage: null as any }));
-      if (verifyMessage) await verifyMessage(sent, ticket, contact);
-      return;
-    }
-  } catch (err) {
-    console.error("handleOpenAi error:", err);
-  }
-}
-
-// helper: formatInventoryReply (copiado e adaptado do seu monolito)
-function pick(obj: any, keys: string[]) {
-  return keys.find(k => obj?.[k] != null && obj?.[k] !== "" && obj?.[k] !== "0");
-}
-
-const formatInventoryReply = (payload: any) => {
-  const items: any[] = payload?.items || [];
-  const page = payload?.page || 1;
-  const pageSize = payload?.pageSize || Math.min(items.length, 5) || 0;
-  const total = payload?.total ?? items.length ?? 0;
-
-  const crit = payload?.criteria || payload?.query?.criteria || {};
-  const filtros = payload?.query?.filtros || {};
-  const whereBits = [crit.neighborhood || filtros.neighborhood, crit.city || filtros.city, crit.state || filtros.state]
-    .filter(Boolean)
-    .join(", ");
-  const where = whereBits ? ` em ${whereBits}` : "";
-
-  const head = total > 0 ? `🌟 Encontrei algumas opções${where}:\n` : "Não encontrei itens para esse critério.";
-
-  const top = items.slice(0, Math.min(pageSize || 5, 5));
-
-  const lines = top.map((it, idx) => {
-    const titleKey =
-      pick(it, ["title", "name", "TituloSite", "Titulo", "Nome", "Descrição", "Descricao", "Codigo", "codigo"]) ||
-      "title";
-    const title = String(it[titleKey] ?? `Item ${idx + 1}`);
-
-    const priceKey = pick(it, ["price", "valor", "preco", "Preço", "ValorVenda", "Valor", "amount"]);
-    const priceStr = priceKey ? `\n💰 ${String(it[priceKey]).toString().replace(/[^\d.,a-zA-Z\$€£R$ ]/g, "")}` : "";
-
-    const urlKey = pick(it, ["url", "URL", "link", "Link", "slug"]);
-    const linkStr = urlKey ? `\n🔗 Ver detalhes ➜ ${it[urlKey]}` : "";
-
-    const attrs: string[] = [];
-    const attrPairs: Array<[string, string]> = [
-      ["color", "🎨"],
-      ["cor", "🎨"],
-      ["size", "📏"],
-      ["tamanho", "📏"],
-      ["memory", "💾"],
-      ["ram", "💾"],
-      ["storage", "💽"],
-      ["warranty", "🛡"],
-      ["garantia", "🛡"],
-      ["brand", "🏷"],
-      ["marca", "🏷"],
-      ["model", "🔧"],
-      ["modelo", "🔧"],
-      ["dormitorios", "🛏"],
-      ["quartos", "🛏"],
-      ["vagas", "🚗"],
-      ["area", "📐"],
-      ["metragem", "📐"]
-    ];
-    for (const [k, icon] of attrPairs) {
-      if (it[k] != null && String(it[k]).trim() !== "") attrs.push(`${icon} ${it[k]}`);
-    }
-
-    const idxEmoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"][idx] || `${idx + 1}.`;
-
-    return `${idxEmoji} *${title}*\n${attrs.join(" | ")}${priceStr}${linkStr}`;
-  });
-
-  const footer = total > page * pageSize ? `\n👉 *Diga "ver mais"* para ver a próxima página.` : "";
-
-  return `${head}\n${lines.join("\n\n")}${footer}`.trim();
-};
-
-function buildDefaultGreeting(contactName?: string, brandName?: string) {
-  const nome = (contactName || "tudo bem").trim();
-  const marca = (brandName || "").trim();
-
-  const intro = marca ? `Sou o assistente da ${marca}.` : "Sou seu assistente virtual.";
-
-  return [
-    `Oi, ${nome}! 👋`,
-    `${intro} Posso te ajudar com o que você precisar.`,
-    "Se preferir, me diga em poucas palavras o que quer fazer e eu já te guio 😉"
-  ].join("\n");
 }
