@@ -936,77 +936,114 @@ const brandName =
 
   // ======== INVENTORY via PLANNER (LLM) ========
   const planner = new Planner(prompt?.apiKey);
+
+  // carrega estado anterior do ticket (mantém slots entre mensagens)
   const existing = (await loadState(ticket)) || { page: 0, pageSize: 5, slots: {} };
 
+  // passa os slots já conhecidos para o planner (ajuda no follow-up)
   const plan = await planner.infer(text, existing.slots || {});
   logger.info({ ctx: "Planner", plan }, "planner-output");
 
   if (plan.intent === "browse_inventory") {
-    // atualiza o estado com domínio/slots
-    const newPage = /\b(ver mais|proxima pagina|pr[oó]xima p[aá]gina)\b/i.test(text) ? (existing.page || 0) + 1 : (existing.page || 1);
+    // 🔁 MERGE de slots (não perder o que veio na mensagem anterior)
+    const mergedSlots = { ...(existing.slots || {}), ...(plan.slots || {}) };
+
+    // paginação automática quando o usuário pedir “ver mais / próxima página”
+    const nextPageRegex = /\b(ver mais|proxima pagina|pr[oó]xima p[aá]gina|mais resultados)\b/i;
+    const newPage = nextPageRegex.test(text) ? (existing.page || 1) + 1 : (existing.page || 1);
+
+    // persiste o estado
     const state = {
       domain: plan.domain || existing.domain,
-      slots: plan.slots || existing.slots,
+      slots: mergedSlots,
       page: newPage,
       pageSize: existing.pageSize || 5
     };
     await saveState(ticket, state);
 
-    // se não estiver pronto, faça perguntas naturais sugeridas
-    if (!plan.query_ready) {
-      const qs = (plan.followups || []).slice(0, 2); // no máx. 2 por turno
-      if (qs.length) {
-        const sent = await wbot.sendMessage(msg.key.remoteJid!, {
-          text: qs.join("\n")
-        });
-        await verifyMessage(sent!, ticket, contact);
-        return;
-      }
-      // fallback: uma pergunta genérica
-      const sent = await wbot.sendMessage(msg.key.remoteJid!, {
-        text: "Quer me dizer mais alguma preferência importante? (ex.: preço máximo, número de quartos/portas, bairro/marca...)"
-      });
+    // ⛳️ Heurística de "pronto" mais humana (mesmo se o planner marcar false)
+    const hasGeo =
+      !!(mergedSlots.cidade || mergedSlots.city || mergedSlots.bairro || mergedSlots.neighborhood || mergedSlots.uf || mergedSlots.state);
+    const hasSpec =
+      !!(mergedSlots.quartos || mergedSlots.dormitorios || mergedSlots.precoMax || mergedSlots.priceMax || mergedSlots.garagem || mergedSlots.vagas ||
+        mergedSlots.tipo || mergedSlots.marca || mergedSlots.modelo);
+
+    const queryReady = plan.query_ready || hasGeo || hasSpec;
+
+    // se não estiver pronto, pergunte (no máx. 2 followups)
+    if (!queryReady) {
+      const qs = (plan.followups || []).slice(0, 2);
+      const textToSend = qs.length
+        ? qs.join("\n")
+        : "Quer me dizer mais alguma preferência importante? (ex.: preço máximo, número de quartos/portas, bairro/marca...)";
+
+      const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: textToSend });
       await verifyMessage(sent!, ticket, contact);
       return;
     }
 
-    // pronto para buscar → chama backend genérico
+    // ✅ pronto para buscar → chama o backend genérico
     try {
       const base = (process.env.BACKEND_URL || "http://localhost:3000").replace(/\/$/, "");
       const bearer = makeServiceBearer(ticket.companyId);
 
-      const payload: any = {
+      // payload base
+      const payloadBase: any = {
         companyId: ticket.companyId,
-        text,                       // texto atual (para o backend usar se quiser)
+        text,                          // texto desta mensagem (se o backend quiser usar)
         page: state.page || 1,
         pageSize: state.pageSize || 5,
-        categoryHint: state.domain, // <- usa a Dica de Categoria
-        filtros: state.slots        // <- envia slots como filtros
+        categoryHint: state.domain,    // dica de categoria (imóveis, veículos, etc.)
+        filtros: state.slots           // 🔑 usa os SLOTS MESCLADOS
       };
 
-      const { data: auto } = await axios.post(
-        `${base}/inventory/agent/auto`,
-        payload,
-        {
-          headers: { Authorization: bearer, "Content-Type": "application/json" },
-          timeout: 8000
-        }
-      );
+      // 1ª tentativa
+      logger.info({ ctx: "AgentAuto", step: "try:primary", payload: payloadBase }, "agent_auto_in");
+      let { data: auto } = await axios.post(`${base}/inventory/agent/auto`, payloadBase, {
+        headers: { Authorization: bearer, "Content-Type": "application/json" },
+        timeout: 10000
+      });
 
-      // sempre persistir (mantém continuidade)
+      // fallback leve (mais humano): se 0 resultados e tem bairro, tenta sem bairro
+      if ((!auto?.items || auto.items.length === 0) && payloadBase?.filtros?.bairro) {
+        const payloadNoBairro = {
+          ...payloadBase,
+          filtros: { ...payloadBase.filtros }
+        };
+        delete payloadNoBairro.filtros.bairro;
+        logger.info({ ctx: "AgentAuto", step: "try:fallback_no_bairro", payload: payloadNoBairro }, "agent_auto_retry");
+
+        const { data: auto2 } = await axios.post(`${base}/inventory/agent/auto`, payloadNoBairro, {
+          headers: { Authorization: bearer, "Content-Type": "application/json" },
+          timeout: 10000
+        });
+
+        // se achou algo, usa o retorno do fallback
+        if (auto2?.items?.length) auto = auto2;
+      }
+
+      // mantém continuidade
       await saveState(ticket, state);
 
+      // respondeu com itens?
       const total = auto?.items?.length || 0;
       if (total > 0) {
-        const reply = (auto?.previewMessage && String(auto.previewMessage).trim())
-          ? auto.previewMessage
-          : formatInventoryReply({ ...auto, page: state.page, pageSize: state.pageSize, category: state.domain });
+        const reply =
+          (auto?.previewMessage && String(auto.previewMessage).trim())
+            ? auto.previewMessage
+            : formatInventoryReply({
+                ...auto,
+                page: state.page,
+                pageSize: state.pageSize,
+                category: state.domain
+              });
 
         const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: reply });
         await verifyMessage(sent!, ticket, contact);
         return;
       }
 
+      // zero resultados após tentativas → resposta empática
       const sent = await wbot.sendMessage(msg.key.remoteJid!, {
         text: "Não encontrei resultados com essas preferências. Quer ajustar? Posso filtrar por preço, localização e características."
       });
@@ -1014,11 +1051,10 @@ const brandName =
       return;
     } catch (err: any) {
       logger.error({ ctx: "InventoryAuto", error: err?.message, status: err?.response?.status }, "inventory-call-failed");
-      // deixa o LLM responder em texto (cai abaixo)
+      // deixa o fluxo cair para a resposta livre do LLM (abaixo, fora do bloco)
     }
   }
   // ======== FIM INVENTORY via PLANNER ========
-
 
   const publicFolder: string = path.resolve(
     __dirname,
