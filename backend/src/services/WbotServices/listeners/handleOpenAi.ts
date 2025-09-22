@@ -89,14 +89,15 @@ async function callRunSearch(args: any) {
   throw new Error("RunSearchService: nenhuma função exportada encontrada.");
 }
 
-export default async function handleOpenAi({
+/** EXPORT NOMEADO (compat com import { handleOpenAi }) */
+export const handleOpenAi = async ({
   msg, wbot, ticket, contact
 }: {
   msg: proto.IWebMessageInfo;
   wbot: any;
   ticket: any;
   contact: any;
-}): Promise<void> {
+}): Promise<void> => {
   try {
     if (contact?.disableBot) return;
 
@@ -115,16 +116,13 @@ export default async function handleOpenAi({
     const ltm = new LongTermMemory(process.env.OPENAI_API_KEY!);
     const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
-    // Memória curta + LONGA (contact)
     const convoState: any = await loadState(ticket.id).catch(() => null);
     const longMem = await ltm.read(companyId, contact?.id);
 
-    // ---- Contexto com memória longa (injetado no prompt) ----
     const memoryContext = longMem.length
       ? `Memória do cliente: ${longMem.map(m => `${m.key}=${m.value}`).join(", ")}`
       : "";
 
-    // 1) Planner (com memória como dica)
     const plan = await callPlanner({
       text: `${maskPII(text)}\n${memoryContext ? `\n[Contexto]\n${memoryContext}` : ""}`,
       last_state: convoState?.state || {},
@@ -141,7 +139,6 @@ export default async function handleOpenAi({
       missing: plan.missing_slots
     });
 
-    // 2) Sem intenção → follow-up
     if (!plan.intent || plan.intent === "other") {
       const sent = await wbot.sendMessage(msg.key.remoteJid!, {
         text: `Entendi. Você poderia me contar um pouco mais para eu te ajudar melhor?`
@@ -150,7 +147,6 @@ export default async function handleOpenAi({
       return;
     }
 
-    // 3) Smalltalk → resposta direta (usa memória longa no system)
     if (plan.intent === "smalltalk") {
       const messages: ChatMsg[] = [
         { role: "system", content: "Você é um atendente simpático, útil e objetivo. Responda em pt-BR." },
@@ -179,7 +175,6 @@ export default async function handleOpenAi({
       const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: answer });
       try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
 
-      // EXTRAÇÃO DE MEMÓRIA LONGA (fatos) da interação
       try {
         const facts = await ltm.extractFactsPtBR(text, answer);
         if (facts?.length) await ltm.upsert(companyId, contact?.id, facts);
@@ -196,12 +191,10 @@ export default async function handleOpenAi({
       return;
     }
 
-    // 4) Inventário — usar memória para completar critérios
     if (plan.intent === "browse_inventory") {
       const chosen = await chooseIntegrationByTextCompat(companyId, text);
       const baseCriteria = await callParseCriteria(companyId, text, plan.slots || {});
 
-      // Completa com memória (ex.: bairro_interesse → bairro)
       for (const mem of longMem) {
         if (mem.key === "bairro_interesse" && !baseCriteria.bairro) baseCriteria.bairro = mem.value;
         if (mem.key === "cidade_interesse" && !baseCriteria.cidade) baseCriteria.cidade = mem.value;
@@ -242,7 +235,6 @@ export default async function handleOpenAi({
       const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: renderedText || "Não encontrei opções ideais ainda. Me dê mais detalhes?" });
       try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
 
-      // EXTRAÇÃO DE MEMÓRIA LONGA após resposta
       try {
         const facts = await ltm.extractFactsPtBR(text, renderedText);
         if (facts?.length) await ltm.upsert(companyId, contact?.id, facts);
@@ -260,7 +252,6 @@ export default async function handleOpenAi({
       return;
     }
 
-    // 5) fallback simpático
     const isGreet = /^oi|ol[aá]|bom dia|boa tarde|boa noite/i.test(text);
     if (isGreet) {
       const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
@@ -282,4 +273,7 @@ export default async function handleOpenAi({
       });
     } catch {}
   }
-}
+};
+
+/** EXPORT DEFAULT (compat com import handleOpenAi from ...) */
+export default handleOpenAi;
