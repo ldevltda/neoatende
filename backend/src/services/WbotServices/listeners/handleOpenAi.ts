@@ -202,7 +202,8 @@ const handleOpenAiCore = async ({ msg, wbot, ticket, contact }: HandleParams): P
     const plan = await callPlanner({
       text: `${maskPII(text)}\n${memoryContext ? `\n[Contexto]\n${memoryContext}` : ""}`,
       last_state: convoState?.state || {},
-      model
+      model,
+      systemPrompt
     });
 
     logger.info({
