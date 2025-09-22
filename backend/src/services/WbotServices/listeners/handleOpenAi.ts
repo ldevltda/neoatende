@@ -52,13 +52,28 @@ async function callPlanner(args: any) {
   };
 }
 
+/** Busca integrações disponíveis sem depender de coluna "ativa" */
 async function chooseIntegrationByTextCompat(companyId: number, text: string) {
-  const list = await InventoryIntegration.findAll({ where: { companyId, isActive: true }, order: [["id", "ASC"]] });
+  const all = await InventoryIntegration.findAll({
+    where: { companyId },
+    order: [["id", "ASC"]]
+  });
+
+  // se, por acaso, algum projeto tiver flag, filtramos em memória;
+  // no seu schema atual, isso não afeta nada.
+  const candidates = all.filter((it: any) => {
+    if (Object.prototype.hasOwnProperty.call(it, "isActive") && it.isActive === false) return false;
+    if (Object.prototype.hasOwnProperty.call(it, "active") && it.active === false) return false;
+    if (Object.prototype.hasOwnProperty.call(it, "enabled") && it.enabled === false) return false;
+    return true;
+  });
+
+  const list = candidates.length ? candidates : all;
   if (!list.length) return null;
   if (list.length === 1) return list[0];
 
   const t = (text || "").toLowerCase();
-  const scored = list.map(intg => {
+  const scored = list.map((intg: any) => {
     const hint = (intg.categoryHint || "").toLowerCase();
     let score = 0;
     if (hint && t.includes(hint)) score += 2;
@@ -108,7 +123,8 @@ const handleOpenAiCore = async ({
   try {
     if (contact?.disableBot) return;
 
-    await limiter.consume(`ai:${ticket.companyId}`, 1);
+    // não deixa limiter derrubar o fluxo caso Redis falhe/estoure
+    try { await limiter.consume(`ai:${ticket.companyId}`, 1); } catch {}
 
     const bodyMessage =
       msg && msg.message
