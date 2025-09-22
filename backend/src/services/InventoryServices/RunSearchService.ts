@@ -1,5 +1,7 @@
+// backend/src/services/InventoryServices/RunSearchService.ts
 import axios, { AxiosRequestConfig } from "axios";
 import { logger } from "../../utils/logger";
+import InventoryIntegration from "../../models/InventoryIntegration";
 
 /** ===== Tipos ===== */
 export type AuthConfig =
@@ -35,7 +37,7 @@ export type RunSearchInput = {
   params?: Record<string, any>;
   page?: number;
   pageSize?: number;
-  text?: string;            // ignorado para o provider (apenas ecoado no response pelo controller)
+  text?: string;            // ecoado pelo controller se quiser
   filtros?: Record<string, any>;
 };
 
@@ -182,7 +184,7 @@ function applyPagination(
   }
 }
 
-/** ===== Executor principal ===== */
+/** ===== Executor principal (seu core) ===== */
 export async function runSearch(
   integration: IntegrationLike,
   { params = {}, page = 1, pageSize = 10, text, filtros = {} }: RunSearchInput
@@ -200,23 +202,19 @@ export async function runSearch(
   const url = endpoint?.url;
   const timeout = (endpoint?.timeout_s || 30) * 1000;
 
-  // NENHUMA alteração: só respeita o que está configurado
   const defaults =
     method === "GET"
       ? endpoint?.default_query || endpoint?.defaults || {}
       : endpoint?.default_body || endpoint?.defaults || {};
 
-  // Monta params finais: defaults + params explícitos + filtros que vierem do chamador
   const plannedParams: Record<string, any> = {
     ...(defaults || {}),
     ...(params || {}),
     ...(filtros || {})
   };
 
-  // Aplica paginação (sem mudar nomes configurados)
   applyPagination(plannedParams, pagination, page, pageSize);
 
-  // Se 'pesquisa' for objeto, stringifica; se já for string, NÃO mexe
   if (
     Object.prototype.hasOwnProperty.call(plannedParams, "pesquisa") &&
     typeof plannedParams.pesquisa === "object"
@@ -297,3 +295,36 @@ export async function runSearch(
     raw: responseData
   };
 }
+
+/** ===== Adaptador de compatibilidade esperado pelo handleOpenAi =====
+ *  - aceita { companyId, integrationId, criteria, page, limit, sort, locale }
+ *  - carrega a integração e delega para runSearch
+ */
+export async function run(args: {
+  companyId: number;
+  integrationId?: number | null;
+  criteria?: Record<string, any>;
+  page?: number;
+  limit?: number;
+  sort?: string;
+  locale?: string;
+}) {
+  const { companyId, integrationId, criteria = {}, page = 1, limit = 10, sort, locale } = args || ({} as any);
+
+  const where: any = { companyId };
+  if (integrationId) where.id = integrationId;
+
+  const integration = await InventoryIntegration.findOne({ where, order: [["id", "ASC"]] });
+  if (!integration) throw new Error("Nenhuma integração de inventário encontrada para esta empresa.");
+
+  const res = await runSearch(integration as any, {
+    params: { ...criteria, sort, locale },
+    page,
+    pageSize: limit
+  });
+
+  return { items: res.items, total: res.total ?? res.items.length, raw: res.raw };
+}
+
+/** default export, também aceito pelo handleOpenAi */
+export default run;
