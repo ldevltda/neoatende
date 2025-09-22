@@ -15,79 +15,79 @@ const norm = (s?: string) =>
 
 function normalizeCommon(slots: Slots): Slots {
   const out: Slots = {};
+
   for (const [k0, v0] of Object.entries(slots || {})) {
     const k = norm(k0);
     let v: any = typeof v0 === "string" ? v0.trim() : v0;
 
-    // preço
-    if (["preco", "preço", "valor", "ate", "até", "max", "budget", "precomax"].includes(k)) {
+    // -------- preço --------
+    // EN + PT → precoMax / precoMin
+    if (["preco", "preço", "valor", "max", "teto", "budget", "ate", "até", "pricemax", "price_max", "priceTo", "price_to"].includes(k)) {
       out.precoMax = toNumber(v); continue;
     }
-    if (["min", "precomin", "de"].includes(k)) {
+    if (["min", "floor", "de", "pricemin", "price_min", "priceFrom", "price_from", "a_partir_de"].includes(k)) {
       out.precoMin = toNumber(v); continue;
     }
 
-    // localização
-    if (["cidade"].includes(k)) { out.cidade = String(v); continue; }
-    if (["uf", "estado"].includes(k)) { out.uf = String(v).toUpperCase(); continue; }
-    if (["bairro", "regiao", "região"].includes(k)) { out.bairro = String(v); continue; }
+    // -------- paginação --------
+    if (["page", "pagina", "página"].includes(k)) { out.__page = toNumber(v); continue; }
+    if (["pagesize", "page_size", "per_page", "perpage", "tamanho", "limit", "limite"].includes(k)) { out.__pageSize = toNumber(v); continue; }
 
+    // -------- localização (EN + PT) → cidade / uf / bairro --------
+    if (["city", "cidade", "municipio", "município"].includes(k)) { out.cidade = String(v); continue; }
+    if (["state", "uf", "estado"].includes(k)) { out.uf = String(v).toUpperCase(); continue; }
+    if (["neighborhood", "bairro", "regiao", "região", "distrito", "zona"].includes(k)) { out.bairro = String(v); continue; }
+
+    // pass-through (outras chaves tratadas por normalizadores específicos)
     out[k0] = v0;
   }
+
   return out;
 }
 
+/** Imóveis */
 function normalizeImoveis(slots: Slots): Slots {
   const s = normalizeCommon(slots);
   const out: Slots = { ...s };
 
-  // tipo
-  const tipo = norm(s.tipo || s["tipo_imovel"] || s["property_type"]);
+  // tipo → tipo (apartamento, casa, comercial...)
+  const tipo = norm(s.tipo || s["tipo_imovel"] || s["property_type"] || s.type || s.typeHint || s.categoria);
   if (tipo) {
-    if (/\b(apto|apart|apartamento)\b/.test(tipo)) out.tipo = "apartamento";
-    else if (/\bcasa\b/.test(tipo)) out.tipo = "casa";
+    if (/\b(apto|apart|apartamento|flat)\b/.test(tipo)) out.tipo = "apartamento";
+    else if (/\bcasa|sobrado|residencia|residência\b/.test(tipo)) out.tipo = "casa";
     else if (/\bcomercial|sala|loja|sobreloja\b/.test(tipo)) out.tipo = "comercial";
   }
 
-  // quartos → dormitorios
-  const quartos = s.quartos ?? s.qtde_quartos ?? s.dormitorios ?? s.dorms ?? s["dormitórios"];
+  // quartos → dormitorios (EN+PT)
+  const quartos = s.quartos ?? s.qtde_quartos ?? s.dormitorios ?? s.dorms ?? s["dormitórios"] ?? s.bedrooms;
   if (quartos != null) out.dormitorios = toNumber(quartos);
 
-  // vagas
+  // garagem/hasGarage → vagas
   const vagas = s.vagas ?? s.vaga ?? s.garagem ?? s.garagens;
   if (vagas != null) out.vagas = toNumber(vagas);
+  if (out.vagas == null && typeof s.hasGarage === "boolean" && s.hasGarage) out.vagas = 1; // heurística segura
 
-  // área
+  // área (quando vier consolidado) + faixas
   const area = s.area ?? s["m2"] ?? s["m²"] ?? s.area_privativa ?? s.area_util;
   if (area != null) out.area = toNumber(area);
+  if (s.areaMin != null) out.areaMin = toNumber(s.areaMin);
+  if (s.areaMax != null) out.areaMax = toNumber(s.areaMax);
 
   return out;
 }
 
+/** Veículos */
 function normalizeCarros(slots: Slots): Slots {
   const s = normalizeCommon(slots);
   const out: Slots = { ...s };
 
-  if (s.precoMax != null) out.precoMax = toNumber(s.precoMax);
-  if (s.precoMin != null) out.precoMin = toNumber(s.precoMin);
-
-  const portas = s.portas ?? s.qtde_portas;
-  if (portas != null) out.portas = toNumber(portas);
-
-  const cambio = norm(s.cambio || s.transmissao);
-  if (cambio) {
-    if (/\b(auto|automatico)\b/.test(cambio)) out.cambio = "automatico";
-    else if (/\bmanual\b/.test(cambio)) out.cambio = "manual";
-  }
-
-  const comb = norm(s.combustivel || s.comb);
-  if (comb) {
-    if (/\bflex\b/.test(comb)) out.combustivel = "flex";
-    else if (/\bdiesel\b/.test(comb)) out.combustivel = "diesel";
-    else if (/\betanol|alcool\b/.test(comb)) out.combustivel = "etanol";
-    else if (/\bgasolina\b/.test(comb)) out.combustivel = "gasolina";
-    else if (/\beletrico\b/.test(comb)) out.combustivel = "eletrico";
-  }
+  out.marca  = s.marca ?? s.brand;
+  out.modelo = s.modelo ?? s.model;
+  if (s.yearMin != null) out.ano_min = toNumber(s.yearMin);
+  if (s.yearMax != null) out.ano_max = toNumber(s.yearMax);
+  if (s.kmMax   != null) out.km_max  = toNumber(s.kmMax);
+  if (s.transmission) out.transmissao = s.transmission;
+  if (s.fuel)         out.combustivel = s.fuel;
 
   return out;
 }
