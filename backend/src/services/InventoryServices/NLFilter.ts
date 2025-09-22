@@ -1,4 +1,3 @@
-// backend/src/services/InventoryServices/NLFilter.ts
 // Motor semântico multi-domínio: interpreta o texto, aplica HARD-FILTER abrangente e ranqueia.
 
 export type Criteria = {
@@ -12,7 +11,7 @@ export type Criteria = {
   typeHint?: string;     // "apartamento", "casa", "studio"...
   areaMin?: number;
   areaMax?: number;
-  hasGarage?: boolean;   // novo
+  hasGarage?: boolean;
 
   // Preço genérico (serve pra qualquer domínio)
   priceMin?: number;
@@ -116,11 +115,11 @@ const TYPE_MAP: Record<string, string[]> = {
   "studio": ["studio", "stúdio", "kitnet", "kitinete", "loft"],
   "terreno": ["terreno", "lote", "loteamento"]
 };
-const TRANSMISSION_MAP = {
+const TRANSMISSION_MAP: Record<string, string[]> = {
   "automatico": ["automatico", "automático", "auto"],
   "manual": ["manual"]
 };
-const FUEL_MAP = {
+const FUEL_MAP: Record<string, string[]> = {
   "flex": ["flex", "etanol", "álcool"],
   "gasolina": ["gasolina"],
   "diesel": ["diesel"],
@@ -302,6 +301,12 @@ function normalizePrice(s: string): number | undefined {
   return n !== undefined ? Math.round(n * mult) : undefined;
 }
 
+function parsePriceStrict(s?: string | number) {
+  if (s === null || s === undefined) return undefined;
+  const n = Number(String(s).replace(/[^\d]/g, ""));
+  return isNaN(n) ? undefined : n;
+}
+
 // Concatena campos para busca textual abrangente
 function makeSearchBlob(it: any) {
   const bits: string[] = [];
@@ -451,7 +456,8 @@ export function filterAndRankItems(itemsIn: any[], criteria: Criteria): any[] {
     if (criteria.hasGarage === true && vagas && vagas >= 1) score += 0.7;
 
     // Preço
-    if (price && criteria.priceMax && price <= criteria.priceMax) score += 0.6;
+    const priceStrict = parsePriceStrict(priceRaw);
+    if (priceStrict && criteria.priceMax && priceStrict <= criteria.priceMax) score += 0.6;
 
     // Veículos
     if (criteria.brand && normIncludes(brand, criteria.brand)) score += 1.5;
