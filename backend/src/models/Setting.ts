@@ -1,3 +1,5 @@
+// backend/src/models/Setting.ts
+
 import {
   Table,
   Column,
@@ -7,22 +9,37 @@ import {
   PrimaryKey,
   ForeignKey,
   BelongsTo,
-  AutoIncrement
+  AutoIncrement,
+  Index,
+  DataType
 } from "sequelize-typescript";
 
 import Company from "./Company";
 
-@Table
+@Table({
+  tableName: "Settings",
+  timestamps: true
+})
 class Setting extends Model<Setting> {
   @PrimaryKey
   @AutoIncrement
   @Column
   id: number;
 
+  @ForeignKey(() => Company)
+  @Index({ name: "settings_companyId_key_unique", unique: true })
   @Column
+  companyId: number;
+
+  @BelongsTo(() => Company)
+  company: Company;
+
+  // parte do índice composto com companyId
+  @Index({ name: "settings_companyId_key_unique", unique: true })
+  @Column({ type: DataType.STRING, allowNull: false })
   key: string;
 
-  @Column
+  @Column({ type: DataType.TEXT, allowNull: false, defaultValue: "" })
   value: string;
 
   @CreatedAt
@@ -30,13 +47,6 @@ class Setting extends Model<Setting> {
 
   @UpdatedAt
   updatedAt: Date;
-
-  @ForeignKey(() => Company)
-  @Column
-  companyId: number;
-
-  @BelongsTo(() => Company)
-  company: Company;
 }
 
 export default Setting;
