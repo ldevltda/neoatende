@@ -1,3 +1,5 @@
+// frontend/src/components/CompaniesManager/index.js
+
 import React, { useState, useEffect } from "react";
 import {
   makeStyles,
@@ -85,7 +87,8 @@ export function CompanyForm(props) {
     campaignsEnabled: false,
     dueDate: "",
     recurrence: "",
-    ...initialValue,
+    segment: "imoveis",
+    // ⬆️ default primeiro; initialValue entra por cima no effect
   });
 
   const { list: listPlans } = usePlans();
@@ -101,15 +104,14 @@ export function CompanyForm(props) {
 
   useEffect(() => {
     setRecord((prev) => {
-      if (moment(initialValue).isValid()) {
-        initialValue.dueDate = moment(initialValue.dueDate).format(
-          "YYYY-MM-DD"
-        );
+      const next = { ...prev, ...initialValue };
+      // corrige apenas o dueDate se houver
+      if (initialValue && initialValue.dueDate && moment(initialValue.dueDate).isValid()) {
+        next.dueDate = moment(initialValue.dueDate).format("YYYY-MM-DD");
       }
-      return {
-        ...prev,
-        ...initialValue,
-      };
+      // garante default de segmento caso não venha do backend
+      if (!next.segment) next.segment = "imoveis";
+      return next;
     });
   }, [initialValue]);
 
@@ -118,7 +120,7 @@ export function CompanyForm(props) {
       data.dueDate = null;
     }
     onSubmit(data);
-    setRecord({ ...initialValue, dueDate: "" });
+    setRecord({ ...record, ...initialValue, dueDate: "" });
   };
 
   const handleOpenModalUsers = async () => {
@@ -147,29 +149,19 @@ export function CompanyForm(props) {
     if (data.dueDate !== "" && data.dueDate !== null) {
       switch (data.recurrence) {
         case "MENSAL":
-          data.dueDate = moment(data.dueDate)
-            .add(1, "month")
-            .format("YYYY-MM-DD");
+          data.dueDate = moment(data.dueDate).add(1, "month").format("YYYY-MM-DD");
           break;
         case "BIMESTRAL":
-          data.dueDate = moment(data.dueDate)
-            .add(2, "month")
-            .format("YYYY-MM-DD");
+          data.dueDate = moment(data.dueDate).add(2, "month").format("YYYY-MM-DD");
           break;
         case "TRIMESTRAL":
-          data.dueDate = moment(data.dueDate)
-            .add(3, "month")
-            .format("YYYY-MM-DD");
+          data.dueDate = moment(data.dueDate).add(3, "month").format("YYYY-MM-DD");
           break;
         case "SEMESTRAL":
-          data.dueDate = moment(data.dueDate)
-            .add(6, "month")
-            .format("YYYY-MM-DD");
+          data.dueDate = moment(data.dueDate).add(6, "month").format("YYYY-MM-DD");
           break;
         case "ANUAL":
-          data.dueDate = moment(data.dueDate)
-            .add(12, "month")
-            .format("YYYY-MM-DD");
+          data.dueDate = moment(data.dueDate).add(12, "month").format("YYYY-MM-DD");
           break;
         default:
           break;
@@ -210,6 +202,7 @@ export function CompanyForm(props) {
                   margin="dense"
                 />
               </Grid>
+
               <Grid xs={12} sm={6} md={2} item>
                 <Field
                   as={TextField}
@@ -221,6 +214,7 @@ export function CompanyForm(props) {
                   required
                 />
               </Grid>
+
               <Grid xs={12} sm={6} md={2} item>
                 <Field
                   as={TextField}
@@ -231,6 +225,7 @@ export function CompanyForm(props) {
                   margin="dense"
                 />
               </Grid>
+
               <Grid xs={12} sm={6} md={2} item>
                 <FormControl margin="dense" variant="outlined" fullWidth>
                   <InputLabel htmlFor="plan-selection">
@@ -253,6 +248,31 @@ export function CompanyForm(props) {
                   </Field>
                 </FormControl>
               </Grid>
+
+              {/* SEGMENTO */}
+              <Grid xs={12} sm={6} md={2} item>
+                <FormControl margin="dense" variant="outlined" fullWidth>
+                  <InputLabel htmlFor="segment-selection">Segmento</InputLabel>
+                  <Field
+                    as={Select}
+                    id="segment-selection"
+                    label="Segmento"
+                    labelId="segment-selection-label"
+                    name="segment"
+                    margin="dense"
+                  >
+                    {/* ⚠️ Backend aceita apenas "imoveis" no momento */}
+                    <MenuItem value={"imoveis"}>Imobiliária</MenuItem>
+                    {/* Quando liberar no backend:
+                    <MenuItem value={"veiculos"}>Veículos</MenuItem>
+                    <MenuItem value={"clinicas"}>Clínicas</MenuItem>
+                    <MenuItem value={"varejo"}>Varejo</MenuItem>
+                    */}
+                  </Field>
+                </FormControl>
+              </Grid>
+              {/* /SEGMENTO */}
+
               <Grid xs={12} sm={6} md={2} item>
                 <FormControl margin="dense" variant="outlined" fullWidth>
                   <InputLabel htmlFor="status-selection">
@@ -271,6 +291,7 @@ export function CompanyForm(props) {
                   </Field>
                 </FormControl>
               </Grid>
+
               <Grid xs={12} sm={6} md={2} item>
                 <FormControl margin="dense" variant="outlined" fullWidth>
                   <InputLabel htmlFor="status-selection">{i18n.t("settings.company.form.campanhas")}</InputLabel>
@@ -287,6 +308,7 @@ export function CompanyForm(props) {
                   </Field>
                 </FormControl>
               </Grid>
+
               <Grid xs={12} sm={6} md={2} item>
                 <FormControl variant="outlined" fullWidth>
                   <Field
@@ -303,6 +325,7 @@ export function CompanyForm(props) {
                   />
                 </FormControl>
               </Grid>
+
               <Grid xs={12} sm={6} md={2} item>
                 <FormControl margin="dense" variant="outlined" fullWidth>
                   <InputLabel htmlFor="recorrencia-selection">
@@ -324,6 +347,7 @@ export function CompanyForm(props) {
                   </Field>
                 </FormControl>
               </Grid>
+
               <Grid xs={12} item>
                 <Grid justifyContent="flex-end" spacing={1} container>
                   <Grid xs={4} md={1} item>
@@ -460,6 +484,9 @@ export function CompaniesManagerGrid(props) {
             <TableCell align="left">{i18n.t("settings.company.form.email")}</TableCell>
             <TableCell align="left">{i18n.t("settings.company.form.phone")}</TableCell>
             <TableCell align="left">{i18n.t("settings.company.form.plan")}</TableCell>
+            {/* NOVO: coluna Segmento */}
+            <TableCell align="left">Segmento</TableCell>
+            {/* /NOVO */}
             <TableCell align="left">{i18n.t("settings.company.form.campanhas")}</TableCell>
             <TableCell align="left">{i18n.t("settings.company.form.status")}</TableCell>
             <TableCell align="left">{i18n.t("settings.company.form.createdAt")}</TableCell>
@@ -478,6 +505,9 @@ export function CompaniesManagerGrid(props) {
               <TableCell align="left">{row.email || "-"}</TableCell>
               <TableCell align="left">{row.phone || "-"}</TableCell>
               <TableCell align="left">{renderPlan(row)}</TableCell>
+              {/* NOVO: mostra o segmento (fallback para imoveis) */}
+              <TableCell align="left">{row.segment || "imoveis"}</TableCell>
+              {/* /NOVO */}
               <TableCell align="left">{renderCampaignsStatus(row)}</TableCell>
               <TableCell align="left">{renderStatus(row)}</TableCell>
               <TableCell align="left">{dateToClient(row.createdAt)}</TableCell>
@@ -510,6 +540,7 @@ export default function CompaniesManager() {
     campaignsEnabled: false,
     dueDate: "",
     recurrence: "",
+    segment: "imoveis"
   });
 
   useEffect(() => {
@@ -577,14 +608,15 @@ export default function CompaniesManager() {
       campaignsEnabled: false,
       dueDate: "",
       recurrence: "",
+      segment: "imoveis"
     }));
   };
 
   const handleSelect = (data) => {
     let campaignsEnabled = false;
 
-    const setting = data.settings.find(
-      (s) => s.key.indexOf("campaignsEnabled") > -1
+    const setting = data.settings?.find(
+      (s) => s.key && s.key.indexOf("campaignsEnabled") > -1
     );
     if (setting) {
       campaignsEnabled =
@@ -602,6 +634,7 @@ export default function CompaniesManager() {
       campaignsEnabled,
       dueDate: data.dueDate || "",
       recurrence: data.recurrence || "",
+      segment: data.segment || "imoveis"
     }));
   };
 

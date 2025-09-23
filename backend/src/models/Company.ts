@@ -131,6 +131,9 @@ class Company extends Model<Company> {
     hooks: true
   })
   ticketTrankins: TicketTraking[];
+
+  @Column
+  segment: string;
 }
 
 export default Company;

@@ -1,0 +1,14 @@
+{
+  "settings": {
+    "defaultCta": "👉 Fale comigo e agendamos sua visita hoje!",
+    "inventoryEnabled": true,
+    "chatBotType": "text"
+  },
+  "queues": [
+    { "name": "Vendas - Imóveis", "greetingMessage": "Olá! Sou da equipe de imóveis. Como posso ajudar?" }
+  ],
+  "inventory": {
+    "providers": ["vista", "olx"],
+    "defaults": { "city": "São José/SC" }
+  }
+}
