@@ -1,13 +1,6 @@
 // backend/src/services/IntegrationsServices/OpenAiService.ts
 import { proto, WASocket } from "baileys";
-import {
-  convertTextToSpeechAndSaveToFile,
-  getBodyMessage,
-  keepOnlySpecifiedChars,
-  transferQueue,
-  verifyMediaMessage,
-  verifyMessage
-} from "../WbotServices/wbotMessageListener";
+// ❌ removidos imports inexistentes de ../WbotServices/wbotMessageListener
 
 import fs from "fs";
 import path from "path";
@@ -31,7 +24,7 @@ const sessionsOpenAi: SessionOpenAi[] = [];
 interface IOpenAi {
   name: string;
   prompt: string;
-  voice: string;
+  voice: string;       // "texto" = sem TTS
   voiceKey: string;
   voiceRegion: string;
   maxTokens: number;
@@ -39,7 +32,7 @@ interface IOpenAi {
   apiKey: string;
   queueId: number;
   maxMessages: number;
-  model?: string; // default gpt-4o-mini
+  model?: string;      // default gpt-4o-mini
 }
 
 const deleteFileSync = (p: string): void => {
@@ -52,19 +45,55 @@ const sanitizeName = (name: string): string => {
   return sanitized.substring(0, 60);
 };
 
-/**
- * Assina um JWT de "usuário de serviço" para chamadas internas.
- * Requer que o mesmo segredo do middleware esteja em JWT_SECRET (ou SERVICE_JWT_SECRET).
- * O payload inclui companyId para o middleware preencher req.user.companyId.
- */
+// === helpers locais (compat) ===
+const keepOnlySpecifiedChars = (text: string): string =>
+  (text || "").replace(/[^\p{L}\p{N}\s\.,;:!?\-@#%&()\[\]'"\/\\_]/gu, "").trim();
+
+const getBodyMessage = (msg: proto.IWebMessageInfo): string | undefined => {
+  if (!msg?.message) return undefined;
+  const m: any = msg.message;
+  return m.conversation || m.extendedTextMessage?.text || m.ephemeralMessage?.message?.extendedTextMessage?.text;
+};
+
+/** Import dinâmico e opcional dos helpers do listener (se existirem no projeto) */
+async function getWbotHelpers() {
+  try {
+    // @ts-ignore
+    const dynImport = (Function("p", "return import(p)")) as (p: string) => Promise<any>;
+    const mod = await dynImport("../WbotServices/wbotMessageListener");
+    const anyMod = mod || {};
+    return {
+      transferQueue: anyMod.transferQueue as (queueId: number, ticket: Ticket, contact: Contact) => Promise<void>,
+      verifyMessage: anyMod.verifyMessage as (m: any, t: Ticket, c: Contact) => Promise<void>,
+      verifyMediaMessage: anyMod.verifyMediaMessage as (m: any, t: Ticket, c: Contact, tr: TicketTraking, a: boolean, b: boolean, w: WASocket) => Promise<void>,
+      convertTextToSpeechAndSaveToFile:
+        anyMod.convertTextToSpeechAndSaveToFile as (
+          text: string,
+          basePath: string,
+          voiceKey: string,
+          voiceRegion: string,
+          voice: string,
+          ext: "mp3" | "wav"
+        ) => Promise<void>
+    };
+  } catch {
+    return {
+      transferQueue: undefined,
+      verifyMessage: undefined,
+      verifyMediaMessage: undefined,
+      convertTextToSpeechAndSaveToFile: undefined
+    };
+  }
+}
+
+/** Assina um JWT de serviço para /inventory/agent/lookup */
 function makeServiceBearer(companyId: number): string {
   const secret =
     process.env.SERVICE_JWT_SECRET ||
     process.env.JWT_SECRET ||
-    process.env.JWT_KEY; // use o que já existe no projeto
+    process.env.JWT_KEY;
 
   if (!secret) {
-    // Loga claro no console: sem segredo não dá pra assinar.
     logger.error(
       { ctx: "OpenAiService", step: "makeServiceBearer", companyId },
       "JWT secret ausente (defina SERVICE_JWT_SECRET ou JWT_SECRET)"
@@ -72,19 +101,15 @@ function makeServiceBearer(companyId: number): string {
     return "";
   }
 
-  // Monte o payload com os campos que seu middleware costuma popular em req.user
   const payload: any = {
-    id: 0, // id simbólico
+    id: 0,
     name: "inventory-bot",
     email: "inventory-bot@system.local",
-    profile: "admin", // ou "user" conforme sua regra; admin evita bloqueios
-    companyId,        // *** IMPORTANTE *** o controller usa req.user.companyId
+    profile: "admin",
+    companyId
   };
 
-  // Token curto por segurança (5 min é suficiente)
-  const token = jwt.sign(payload, secret, { expiresIn: "5m" });
-
-  return `Bearer ${token}`;
+  return `Bearer ${jwt.sign(payload, secret, { expiresIn: "5m" })}`;
 }
 
 /** Gera tools dinamicamente com base nas integrações da empresa */
@@ -110,11 +135,10 @@ async function buildTools(companyId: number): Promise<ChatCompletionTool[]> {
     }) as ChatCompletionTool
   );
 
-  logger.info({
-    ctx: "OpenAiService",
-    companyId,
-    tools: tools.map(t => t.function?.name)
-  }, "tools built from integrations");
+  logger.info(
+    { ctx: "OpenAiService", companyId, tools: tools.map(t => t.function?.name) },
+    "tools built from integrations"
+  );
 
   return tools;
 }
@@ -128,10 +152,9 @@ async function executeIntegration(
   const base = (process.env.BACKEND_URL || "").replace(/\/$/, "");
   const url = base ? `${base}/inventory/agent/lookup` : `http://127.0.0.1:3000/inventory/agent/lookup`;
 
-    const t0 = Date.now();
+  const t0 = Date.now();
   try {
     const bearer = makeServiceBearer(companyId);
-
     const { data } = await axios.post(
       url,
       {
@@ -144,7 +167,7 @@ async function executeIntegration(
       },
       {
         headers: {
-          Authorization: bearer,                 // <<<<<<<<<< AQUI
+          Authorization: bearer,
           "Content-Type": "application/json",
           Accept: "application/json"
         },
@@ -155,17 +178,10 @@ async function executeIntegration(
 
     const tookMs = Date.now() - t0;
 
-    if ((data as any)?.statusCode === 401 || data?.error === "ERR_SESSION_EXPIRED") {
+    if ((data as any)?.statusCode === 401 || (data as any)?.error === "ERR_SESSION_EXPIRED") {
       logger.warn(
-        {
-          ctx: "OpenAiService",
-          step: "executeIntegration:unauthorized",
-          integrationId,
-          tookMs,
-          statusCode: (data as any)?.statusCode,
-          error: data?.error
-        },
-        "inventory/agent/auto não autorizada"
+        { ctx: "OpenAiService", step: "executeIntegration:unauthorized", integrationId, tookMs },
+        "inventory/agent/lookup não autorizada"
       );
     }
 
@@ -175,8 +191,8 @@ async function executeIntegration(
         step: "executeIntegration:response",
         integrationId,
         tookMs,
-        total: data?.total ?? data?.items?.length ?? 0,
-        hasError: !!data?.error
+        total: (data as any)?.total ?? (data as any)?.items?.length ?? 0,
+        hasError: !!(data as any)?.error
       },
       "integration executed"
     );
@@ -219,19 +235,12 @@ export const handleOpenAi = async (
 
     const corrId = `${ticket.id}:${randomUUID()}`;
 
-    logger.info({
-      corrId,
-      ctx: "OpenAiService",
-      step: "incoming",
-      ticketId: ticket.id,
-      companyId: ticket.companyId,
-      from: contact.number,
-      hasText: !!bodyMessage
-    }, "wa_incoming");
-
-    const publicFolder: string = path.resolve(
-      __dirname, "..", "..", "..", "public", `company${ticket.companyId}`
+    logger.info(
+      { corrId, ctx: "OpenAiService", step: "incoming", ticketId: ticket.id, companyId: ticket.companyId, from: contact.number, hasText: !!bodyMessage },
+      "wa_incoming"
     );
+
+    const publicFolder: string = path.resolve(__dirname, "..", "..", "..", "public", `company${ticket.companyId}`);
 
     // cache de sessão do OpenAI v4
     let openai: SessionOpenAi;
@@ -272,17 +281,10 @@ ${openAiSettings.prompt}\n`;
     }
     messagesOpenAi.push({ role: "user", content: bodyMessage! });
 
-    logger.info({ corrId, ctx: "OpenAiService", step: "build_tools:start", companyId: ticket.companyId }, "build_tools_start");
+    // tools dinâmicas a partir das integrações
     const tools = await buildTools(ticket.companyId);
-    logger.info({
-      corrId,
-      ctx: "OpenAiService",
-      step: "build_tools:done",
-      toolNames: tools.map(t => t.function?.name)
-    }, "build_tools_done");
 
     // 1ª chamada — com tools
-    logger.info({ corrId, ctx: "OpenAiService", step: "llm:pass1:start" }, "llm_pass1_start");
     const chat = await openai.chat.completions.create({
       model: openAiSettings.model || "gpt-4o-mini",
       messages: messagesOpenAi as any,
@@ -291,14 +293,6 @@ ${openAiSettings.prompt}\n`;
       max_tokens: openAiSettings.maxTokens,
       temperature: openAiSettings.temperature
     });
-    logger.info({
-      corrId,
-      ctx: "OpenAiService",
-      step: "llm:pass1:done",
-      openaiId: chat.id,
-      hasToolCalls: !!chat.choices?.[0]?.message?.tool_calls?.length,
-      toolCalls: chat.choices?.[0]?.message?.tool_calls?.map(t => t.function?.name) || []
-    }, "llm_pass1_done");
 
     let response = chat.choices?.[0]?.message?.content;
 
@@ -309,26 +303,7 @@ ${openAiSettings.prompt}\n`;
         const args = JSON.parse(call.function.arguments || "{}");
         const integrationId = parseInt(fnName.replace("integration_", ""), 10);
 
-        logger.info({
-          corrId,
-          ctx: "OpenAiService",
-          step: "tool_call:exec:start",
-          ticketId: ticket.id,
-          integrationId,
-          args
-        }, "tool_call_exec_start");
-
         const result = await executeIntegration(integrationId, args, ticket.companyId);
-
-        logger.info({
-          corrId,
-          ctx: "OpenAiService",
-          step: "tool_call:exec:done",
-          integrationId,
-          hasError: !!(result as any)?.error,
-          count: Array.isArray((result as any)?.items) ? (result as any).items.length : undefined,
-          total: (result as any)?.total
-        }, "tool_call_exec_done");
 
         messagesOpenAi.push({
           role: "tool",
@@ -337,42 +312,32 @@ ${openAiSettings.prompt}\n`;
         });
       }
 
-      logger.info({ corrId, ctx: "OpenAiService", step: "llm:pass2:start" }, "llm_pass2_start");
       const chat2 = await openai.chat.completions.create({
         model: openAiSettings.model || "gpt-4o-mini",
         messages: messagesOpenAi as any,
         max_tokens: openAiSettings.maxTokens,
         temperature: openAiSettings.temperature
       });
-      logger.info({ corrId, ctx: "OpenAiService", step: "llm:pass2:done", openaiId: chat2.id }, "llm_pass2_done");
 
       response = chat2.choices?.[0]?.message?.content;
     }
 
+    // helpers opcionais do listener
+    const { transferQueue, verifyMessage, verifyMediaMessage, convertTextToSpeechAndSaveToFile } = await getWbotHelpers();
+
     // Transferência automática, se o modelo pedir
-    if (response?.includes("Ação: Transferir para o setor de atendimento")) {
-      logger.warn({ corrId, ctx: "OpenAiService", ticketId: ticket.id }, "transfer_requested");
+    if (response?.includes("Ação: Transferir para o setor de atendimento") && transferQueue) {
       await transferQueue(openAiSettings.queueId, ticket, contact);
       response = response.replace("Ação: Transferir para o setor de atendimento", "").trim();
     }
 
     // envio da resposta
-    logger.info({
-      corrId,
-      ctx: "OpenAiService",
-      step: "reply:send",
-      mode: openAiSettings.voice === "texto" ? "text" : "audio"
-    }, "reply_send");
-
-    if (openAiSettings.voice === "texto") {
-      const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, {
-        text: `\u200e ${response || ""}`
-      });
-      await verifyMessage(sentMessage!, ticket, contact);
-      logger.info({ corrId, ctx: "OpenAiService", ticketId: ticket.id }, "text sent");
+    if (openAiSettings.voice === "texto" || !convertTextToSpeechAndSaveToFile) {
+      const sentMessage = await wbot.sendMessage(msg.key.remoteJid!, { text: `\u200e ${response || ""}` });
+      if (verifyMessage) await verifyMessage(sentMessage!, ticket, contact);
     } else {
       const fileName = `${ticket.id}_${Date.now()}`;
-      convertTextToSpeechAndSaveToFile(
+      await convertTextToSpeechAndSaveToFile(
         keepOnlySpecifiedChars(response || ""),
         `${publicFolder}/${fileName}`,
         openAiSettings.voiceKey,
@@ -386,11 +351,12 @@ ${openAiSettings.prompt}\n`;
             mimetype: "audio/mpeg",
             ptt: true
           });
-          await verifyMediaMessage(sendMessage!, ticket, contact, ticketTraking, false, false, wbot);
+          if (verifyMediaMessage) {
+            await verifyMediaMessage(sendMessage!, ticket, contact, ticketTraking, false, false, wbot);
+          }
           deleteFileSync(`${publicFolder}/${fileName}.mp3`);
-          logger.info({ corrId, ctx: "OpenAiService", ticketId: ticket.id }, "audio sent");
         } catch (error) {
-          logger.error({ corrId, ctx: "OpenAiService", ticketId: ticket.id, error }, "audio send error");
+          logger.error({ ctx: "OpenAiService", ticketId: ticket.id, error }, "audio send error");
         }
       });
     }
