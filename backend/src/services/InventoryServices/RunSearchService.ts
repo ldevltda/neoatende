@@ -118,48 +118,49 @@ function normalizeItems(items: any[], rolemap?: any): any[] {
   });
 }
 
-/** Extrai items/total respeitando schema, inclusive "$.*" (dicionário numerado) */
+/** Extrai items/total respeitando schema + fallbacks comuns (data.data, data, results, array) */
 function extractFromResponse(
   respData: any,
   schema?: { itemsPath?: string; totalPath?: string }
 ): { items: any[]; total?: number } {
-  const itemsPath = schema?.itemsPath || "data.items";
-  const totalPath = schema?.totalPath || "data.total";
+  const prefItems = schema?.itemsPath;
+  const prefTotal = schema?.totalPath;
 
-  if (itemsPath === "$.*") {
-    if (Array.isArray(respData)) {
-      return { items: respData, total: deepGet(respData, totalPath, undefined) };
-    }
-    if (respData && typeof respData === "object") {
-      const items = Object.keys(respData)
-        .filter(k => /^\d+$/.test(k))
-        .map(k => (respData as any)[k])
-        .filter(v => v && typeof v === "object");
+  const tryItemsPaths = [
+    prefItems,
+    "data.data",
+    "data.items",
+    "data",
+    "results",
+    "" // se respData já for o array
+  ].filter(Boolean) as string[];
+
+  for (const p of tryItemsPaths) {
+    let items: any = p ? deepGet(respData, p) : respData;
+    if (Array.isArray(items)) {
       const total =
-        deepGet(respData, totalPath, undefined) ??
-        (typeof (respData as any).total === "number" ? (respData as any).total : undefined);
+        (prefTotal ? deepGet(respData, prefTotal, undefined) : undefined) ??
+        deepGet(respData, "meta.total", undefined) ??
+        deepGet(respData, "total", undefined) ??
+        items.length;
       return { items, total };
     }
-    return { items: [], total: undefined };
   }
 
-  const items = deepGet(respData, itemsPath, Array.isArray(respData) ? respData : []);
-  const total =
-    deepGet(respData, totalPath, undefined) ??
-    (Array.isArray(items) ? items.length : undefined);
-  return { items: Array.isArray(items) ? items : [], total };
+  // nada deu certo
+  return { items: [], total: undefined };
 }
 
 /** Normaliza paginação salva como {strategy,page_param,size_param} -> {type,param,sizeParam} */
 function normalizePaginationShape(pag: any): PaginationConfig | undefined {
-  if (!pag) return undefined;
+  if (!pag) return { type: "page", param: "page", sizeParam: "per_page" }; // <- padrão amigável para Barbi
   if ((pag as any).type) return pag as PaginationConfig;
   if ((pag as any).strategy) {
     const typeMap: any = { page: "page", offset: "offset", cursor: "cursor", none: "none" };
     return {
       type: typeMap[pag.strategy] || "none",
       param: pag.page_param || (pag.strategy === "offset" ? "offset" : "page"),
-      sizeParam: pag.size_param || (pag.strategy === "offset" ? "limit" : "pageSize")
+      sizeParam: pag.size_param || (pag.strategy === "offset" ? "limit" : "per_page")
     };
   }
   return pag as PaginationConfig;
@@ -173,7 +174,7 @@ function applyPagination(
 ) {
   if (!pagination || pagination.type === "none") return;
   const pName = pagination.param || (pagination.type === "offset" ? "offset" : "page");
-  const sName = pagination.sizeParam || (pagination.type === "offset" ? "limit" : "pageSize");
+  const sName = pagination.sizeParam || (pagination.type === "offset" ? "limit" : "per_page");
   if (pagination.type === "page") {
     planned[pName] = page;
     planned[sName] = pageSize;
@@ -183,7 +184,7 @@ function applyPagination(
   }
 }
 
-/** ===== Executor de baixo nível (mantido, como já existia) ===== */
+/** ===== Executor de baixo nível ===== */
 export async function runSearch(
   integration: IntegrationLike,
   { params = {}, page = 1, pageSize = 10, text, filtros = {} }: RunSearchInput
@@ -276,7 +277,39 @@ export async function runSearch(
     throw err;
   }
 
-  const { items, total } = extractFromResponse(responseData, schema);
+  let { items, total } = extractFromResponse(responseData, schema);
+
+  // ------- Fallback: se com filtros veio vazio, tenta SEM filtros -------
+  const hadFilters =
+    Object.keys({ ...(filtros?.pesquisa || {}), ...(filtros || {}) }).length > 0;
+
+  if ((!items || items.length === 0) && hadFilters) {
+    const plannedNoFilter: Record<string, any> = {};
+    applyPagination(plannedNoFilter, pagination, page, pageSize);
+
+    const reqCfg2: AxiosRequestConfig = {
+      method,
+      url,
+      timeout,
+      headers: { ...(endpoint?.headers || {}) },
+      ...(method === "GET" ? { params: plannedNoFilter } : { data: plannedNoFilter })
+    };
+    applyAuthToRequest(reqCfg2, auth);
+
+    try {
+      const resp2 = await axios.request(reqCfg2);
+      const parsed2 = extractFromResponse(resp2.data, schema);
+      if (parsed2.items && parsed2.items.length) {
+        // Integração está ok — mostra amostras para guiar o lead
+        items = parsed2.items.slice(0, Math.max(3, Math.min(5, pageSize)));
+        total = 0;
+      }
+    } catch (e) {
+      // ignora
+    }
+  }
+  // ---------------------------------------------------------------------
+
   const normalized = normalizeItems(items, rolemap);
 
   logger.debug(
@@ -343,9 +376,7 @@ export async function run(args: {
     throw new Error("Nenhuma integração de inventário encontrada para a empresa.");
   }
 
-  // 2) Monta filtros para o executor de baixo nível:
-  //    - Enviamos como { pesquisa: criteria } para atender provedores
-  //      que esperam o parâmetro `pesquisa` (obj será stringificado em runSearch).
+  // 2) Monta filtros para o executor de baixo nível
   const filtros = { pesquisa: criteria };
 
   // 3) Chama o executor principal
