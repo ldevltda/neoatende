@@ -20,7 +20,7 @@ import Queue from "../../../models/Queue";
 import { REAL_ESTATE_SYSTEM_PROMPT } from "../../Agents/templates/realEstatePrompt";
 import VisitService from "../../Visits/VisitService";
 
-/** ---------- util: import dinâmico seguro ---------- */
+/** ---------- import dinâmico seguro ---------- */
 async function safeImport(modulePath: string): Promise<any | null> {
   try {
     // @ts-ignore
@@ -142,7 +142,6 @@ async function getPromptForTicket(companyId: number | null | undefined, queueId?
       try { const r = await (svc as any).getCompanyPromptByQueue(companyId, queueId); if (r) return r; } catch {}
     }
   }
-
   try {
     const PromptModelMod = await safeImport("../../../models/Prompt");
     const PromptModel = PromptModelMod?.default || PromptModelMod;
@@ -170,13 +169,13 @@ async function getPromptForTicket(companyId: number | null | undefined, queueId?
   return {};
 }
 
-/** ---------- helpers de intenção e filtros ---------- */
+/** ---------- classificação e filtros ---------- */
 async function callPlanner(args: any) {
   const anyPlanner: any = Planner as any;
   if (typeof anyPlanner.plan === "function") return anyPlanner.plan(args);
   if (anyPlanner.default && typeof anyPlanner.default.plan === "function") return anyPlanner.default.plan(args);
   const text: string = (args?.text || "").toLowerCase();
-  const inv = /(im[óo]vel|apart|casa|estoque|produto|carro|ve[ií]culo|agenda|hor[aá]rio|pre[çc]o|dispon[ií]vel|ver mais|detalh(e|es)|#\d+)/.test(text);
+  const inv = /(im[óo]vel|apart|casa|terreno|kitnet|estoque|produto|pre[çc]o|dispon[ií]vel)/.test(text);
   return { intent: inv ? "browse_inventory" : "smalltalk", query_ready: inv, slots: {}, followups: inv ? [] : ["Me conta um pouco mais, por favor."] };
 }
 
@@ -190,25 +189,72 @@ async function chooseIntegrationByTextCompat(companyId: number | null | undefine
     const hint = (intg.categoryHint || "").toLowerCase();
     let score = 0;
     if (hint && t.includes(hint)) score += 2;
-    if (/im[óo]veis|imovel|apart|casa/.test(t) && /im[óo]veis|imovel/.test(hint)) score += 1;
-    if (/carro|ve[ií]culo/.test(t) && /carro|ve[ií]culo|auto|veiculo/.test(hint)) score += 1;
-    if (/agenda|hor[aá]rio/.test(t) && /agenda|calendar/.test(hint)) score += 1;
+    if (/im[óo]veis|imovel|apart|casa|terreno/.test(t) && /im[óo]veis|imovel/.test(hint)) score += 1;
     return { intg, score };
   }).sort((a,b) => b.score - a.score);
   return (scored[0]?.score || 0) > 0 ? scored[0].intg : all[0];
 }
 
+type Criteria = {
+  cidade?: string; bairro?: string; tipo?: string;
+  dormitorios?: number | string; vagas?: number | string;
+  precoMin?: number | string; precoMax?: number | string;
+  areaMin?: number | string; areaMax?: number | string;
+  texto?: string;
+};
+
+function normalizeCriteria(anyC: any): Criteria {
+  if (!anyC) return {};
+  const c: Criteria = {};
+  c.cidade = anyC.cidade || anyC.city;
+  c.bairro = anyC.bairro || anyC.neighborhood;
+  c.tipo = anyC.tipo || anyC.tipo_imovel || anyC.type;
+  c.dormitorios = anyC.dormitorios || anyC.quartos || anyC.bedrooms;
+  c.vagas = anyC.vagas || anyC.garagem || anyC.parking;
+  c.precoMin = anyC.precoMin || anyC.preco_min;
+  c.precoMax = anyC.precoMax || anyC.preco_max;
+  c.areaMin = anyC.areaMin || anyC.area_min;
+  c.areaMax = anyC.areaMax || anyC.area_max;
+  c.texto = anyC.texto || anyC.text;
+  return c;
+}
+function mergeCriteria(a: Criteria, b: Criteria): Criteria {
+  return {
+    cidade: b.cidade || a.cidade,
+    bairro: b.bairro || a.bairro,
+    tipo: b.tipo || a.tipo,
+    dormitorios: b.dormitorios || a.dormitorios,
+    vagas: b.vagas || a.vagas,
+    precoMin: b.precoMin || a.precoMin,
+    precoMax: b.precoMax || a.precoMax,
+    areaMin: b.areaMin || a.areaMin,
+    areaMax: b.areaMax || a.areaMax,
+    texto: b.texto || a.texto
+  };
+}
+function enoughForSearch(c: Criteria): boolean {
+  const hasLocal = !!(c.bairro || c.cidade);
+  const hasSpec = !!(c.tipo || c.dormitorios || c.precoMax || c.precoMin || c.areaMin || c.areaMax);
+  return hasLocal && hasSpec;
+}
+function missingSlot(c: Criteria): string | null {
+  if (!c.bairro && !c.cidade) return "local";
+  if (!c.tipo && !c.dormitorios) return "tipo_ou_dormitorios";
+  if (!c.precoMax && !c.precoMin) return "preco";
+  return null;
+}
+
 async function callParseCriteria(companyId: number | null | undefined, text: string, slots: Record<string, any>) {
   try {
     const svc = await safeImport("../../InventoryServices/PlannerService");
-    if (svc?.parseCriteria) return await svc.parseCriteria(companyId, text, slots);
+    if (svc?.parseCriteria) return normalizeCriteria(await svc.parseCriteria(companyId, text, slots));
   } catch {}
   try {
     const anyNF: any = NLFilter as any;
-    if (typeof anyNF.parseCriteria === "function") return await anyNF.parseCriteria(text, slots);
-    if (typeof anyNF.parse === "function") return await anyNF.parse(text, slots);
+    if (typeof anyNF.parseCriteria === "function") return normalizeCriteria(await anyNF.parseCriteria(text, slots));
+    if (typeof anyNF.parse === "function") return normalizeCriteria(await anyNF.parse(text, slots));
   } catch {}
-  return { texto: text, ...slots };
+  return normalizeCriteria({ texto: text, ...slots });
 }
 
 /** ---------- intenções extras ---------- */
@@ -266,20 +312,14 @@ function normalizeArgs(args: any[]) {
   return { msg, wbot, contact, ticket, companyId, flow, isMenu, whatsapp };
 }
 
-/** ---------- resolve companyId de forma ultra-robusta ---------- */
+/** ---------- resolve companyId robusto ---------- */
 async function resolveCompanyId(ticket: any, contact?: any, fallback?: number | null): Promise<number | null> {
-  // 1) direto do ticket
   if (ticket?.companyId) return Number(ticket.companyId);
-
-  // 2) veio do contato?
   if (contact?.companyId) return Number(contact.companyId);
-
-  // 3) consulta o ticket no banco
   try {
     if (ticket?.id) {
       const t = await Ticket.findByPk(ticket.id);
       if (t?.companyId) return Number(t.companyId);
-      // 3.1) se não tiver no record (alguns modelos antigos), tenta via whatsappId/queueId
       if ((t as any)?.whatsappId) {
         const w = await Whatsapp.findByPk((t as any).whatsappId);
         if (w?.companyId) return Number(w.companyId);
@@ -290,26 +330,19 @@ async function resolveCompanyId(ticket: any, contact?: any, fallback?: number | 
       }
     }
   } catch {}
-
-  // 4) se passaram explicitamente
   if (fallback) return Number(fallback);
-
-  // 5) por fim, tenta via whatsappId do ticket recebido (não carregado do DB)
   try {
     if (ticket?.whatsappId) {
       const w = await Whatsapp.findByPk(ticket.whatsappId);
       if (w?.companyId) return Number(w.companyId);
     }
   } catch {}
-
-  // 6) ou via queueId recebido
   try {
     if (ticket?.queueId) {
       const q = await Queue.findByPk(ticket.queueId);
       if ((q as any)?.companyId) return Number((q as any).companyId);
     }
   } catch {}
-
   return null;
 }
 
@@ -334,6 +367,21 @@ async function extractStructuredFacts(text: string, reply: string) {
 }
 
 /** ---------- núcleo ---------- */
+const sessionsOpenAi: { id?: number; client: OpenAI }[] = [];
+const limiter = RateLimiter.forGlobal();
+
+async function getOpenAiClient(companyId: number, overrideKey?: string) {
+  const apiKey = overrideKey || process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error("OPENAI_API_KEY not set");
+  if (overrideKey) return new OpenAI({ apiKey });
+  let session = sessionsOpenAi.find(s => s.id === companyId);
+  if (!session) {
+    session = { id: companyId, client: new OpenAI({ apiKey }) };
+    sessionsOpenAi.push(session);
+  }
+  return session.client;
+}
+
 async function handleOpenAiCore(params: {
   msg: proto.IWebMessageInfo;
   wbot: any;
@@ -360,11 +408,10 @@ async function handleOpenAiCore(params: {
 
     await maybeCaptureLead(text, contact);
 
-    // resolve companyId (fix principal)
+    // resolve companyId
     const companyId = await resolveCompanyId(ticket, contact, params.companyId ?? null);
     if (!companyId) {
       logger.error({ ctx: "handleOpenAi", reason: "companyId_unresolved", ticketId: ticket?.id }, "companyId is undefined");
-      // não mande erro repetidamente
       const last = await loadState(ticket.id).catch(() => null);
       const now = Date.now();
       if (!last?.__lastErrorTs || now - last.__lastErrorTs > 20000) {
@@ -400,15 +447,25 @@ async function handleOpenAiCore(params: {
       ? `Memória do cliente: ${longMem.map(m => `${m.key}=${m.value}`).join(", ")}`
       : "";
 
-    const plan = await callPlanner({
-      text,
-      memoryContext,
-      lastState: convoState,
-      longMem,
-      companyId
+    // ===== Estratégia nova: sempre tentar extrair e acumular filtros =====
+    const parsedNow = await callParseCriteria(companyId, text, {});
+    const lastCriteria: Criteria = convoState?.lastCriteria || {};
+    const mergedCriteria = mergeCriteria(lastCriteria, parsedNow);
+
+    // salva critérios (mesmo que incompletos)
+    await saveState(ticket.id, { ...(convoState || {}), lastCriteria: mergedCriteria });
+
+    // Decide intenção com fallback do Planner
+    let plan = await callPlanner({
+      text, memoryContext, lastState: convoState, longMem, companyId
     });
 
-    // DETALHES/PAGINAÇÃO se já tem lastSearch
+    // Força inventário se tivermos info suficiente no segmento 'imoveis'
+    if (segment === "imoveis" && enoughForSearch(mergedCriteria)) {
+      plan = { intent: "browse_inventory", query_ready: true, slots: {}, followups: [] };
+    }
+
+    // ===== atalhos de detalhe/paginação se já houve busca =====
     if (segment === "imoveis" && convoState?.lastSearch?.items?.length) {
       const idx = detectDetailsByIndex(text);
       if (idx !== null && idx > 0) {
@@ -481,7 +538,7 @@ async function handleOpenAiCore(params: {
       }
     }
 
-    // SMALLTALK
+    // ===== SMALLTALK / Q&A =====
     if (plan.intent !== "browse_inventory") {
       const messages: { role: "system" | "user" | "assistant"; content: string }[] = [];
       if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
@@ -500,12 +557,30 @@ async function handleOpenAiCore(params: {
         messages: [...messages, { role: "user", content: maskPII(text) }]
       });
 
-      const answer = chat.choices?.[0]?.message?.content?.trim();
+      let answer = chat.choices?.[0]?.message?.content?.trim();
+
+      // Se não trouxe nada útil, caia para pergunta FOCADA com base nos slots que faltam
+      if (!answer || /qual bairro|qual tipo|está procurando\?/i.test(answer)) {
+        const miss = missingSlot(mergedCriteria);
+        if (miss === "local") answer = "Perfeito! Me diga a *cidade ou bairro* de preferência 😉";
+        else if (miss === "tipo_ou_dormitorios") answer = "Ótimo! Prefere *casa, apartamento, terreno*…? E se puder, quantos *dormitórios*?";
+        else if (miss === "preco") answer = "Tem uma *faixa de preço* em mente? Posso te sugerir ótimas opções dentro do seu orçamento.";
+      }
+
       if (!answer) return;
 
       if (shouldTransferToHuman(answer)) {
         await wbot.sendMessage(msg.key.remoteJid!, { text: "Vou transferir para um atendente humano para te ajudar melhor. 🙏" });
         return;
+      }
+
+      // anti-loop: se a última pergunta foi igual, mude a pergunta
+      const lastQ = convoState?.lastQuestion || "";
+      if (answer === lastQ) {
+        const miss = missingSlot(mergedCriteria);
+        if (miss === "tipo_ou_dormitorios") answer = "Beleza! Quantos *dormitórios* você precisa?";
+        else if (miss === "local") answer = "Show! Qual *bairro* (ou cidade) você prefere?";
+        else answer = "Me dá só mais um detalhe (bairro/cidade, tipo ou faixa de preço) que eu já te mando as melhores opções. 😉";
       }
 
       const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: answer });
@@ -519,6 +594,8 @@ async function handleOpenAiCore(params: {
       await saveState(ticket.id, {
         ...(convoState || {}),
         lgpdShown: true,
+        lastQuestion: answer,
+        lastCriteria: mergedCriteria,
         history: [
           ...(convoState?.history || []),
           { role: "user", content: text },
@@ -528,20 +605,10 @@ async function handleOpenAiCore(params: {
       return;
     }
 
-    // INVENTÁRIO
+    // ===== INVENTÁRIO =====
     const chosen = await chooseIntegrationByTextCompat(companyId, text);
-    const baseCriteria = await callParseCriteria(companyId, text, plan.slots || {});
-    for (const mem of longMem) {
-      if (mem.key === "bairro_interesse" && !baseCriteria.bairro) baseCriteria.bairro = mem.value;
-      if (mem.key === "cidade_interesse" && !baseCriteria.cidade) baseCriteria.cidade = mem.value;
-      if (mem.key === "precoMax" && !baseCriteria.precoMax) baseCriteria.precoMax = mem.value;
-      if (mem.key === "precoMin" && !baseCriteria.precoMin) baseCriteria.precoMin = mem.value;
-      if (mem.key === "dormitorios" && !baseCriteria.dormitorios) baseCriteria.dormitorios = mem.value;
-      if (mem.key === "vagas" && !baseCriteria.vagas) baseCriteria.vagas = mem.value;
-      if (mem.key === "tipo_imovel" && !baseCriteria.tipo) baseCriteria.tipo = mem.value;
-    }
-
-    // Agendamento (antes da busca)
+    const criteria = mergedCriteria; // usa o que foi acumulado
+    // Agendamento (antes da busca, se o lead pedir)
     if (segment === "imoveis" && detectVisitIntent(text)) {
       await VisitService.requestVisit({
         companyId,
@@ -557,18 +624,10 @@ async function handleOpenAiCore(params: {
       return;
     }
 
-    if (!plan.query_ready || (plan.missing_slots && plan.missing_slots.length)) {
-      const follow = (plan.followups && plan.followups[0])
-        || `Perfeito! Pode me dizer mais detalhes (ex.: faixa de preço, região ou característica importante)?`;
-      const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: follow });
-      try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
-      return;
-    }
-
     const searchRes = await callRunSearch({
       companyId,
       integrationId: chosen?.id,
-      criteria: baseCriteria,
+      criteria,
       page: 1,
       limit: 10,
       sort: "relevance:desc",
@@ -577,9 +636,10 @@ async function handleOpenAiCore(params: {
 
     await saveState(ticket.id, {
       ...(convoState || {}),
+      lastCriteria: criteria,
       lastSearch: {
         integrationId: chosen?.id || null,
-        criteria: baseCriteria,
+        criteria,
         page: 1,
         pageSize: 10,
         total: searchRes.total || 0,
@@ -608,10 +668,10 @@ async function handleOpenAiCore(params: {
     if (!renderedText) {
       if ((InventoryFormatter as any).formatInventoryReplyWithPrompt && systemPrompt) {
         renderedText = (InventoryFormatter as any).formatInventoryReplyWithPrompt(
-          { items: searchRes.items || [], total: searchRes.total || 0, criteria: baseCriteria }, systemPrompt);
+          { items: searchRes.items || [], total: searchRes.total || 0, criteria }, systemPrompt);
       } else if ((InventoryFormatter as any).formatInventoryReply) {
         renderedText = (InventoryFormatter as any).formatInventoryReply(
-          { items: searchRes.items || [], total: searchRes.total || 0, criteria: baseCriteria });
+          { items: searchRes.items || [], total: searchRes.total || 0, criteria });
       } else {
         renderedText = JSON.stringify({ items: searchRes.items || [], total: searchRes.total || 0 }, null, 2);
       }
@@ -634,6 +694,7 @@ async function handleOpenAiCore(params: {
     const newState: any = await loadState(ticket.id).catch(() => (convoState || {}));
     await saveState(ticket.id, {
       ...(newState || {}),
+      lastQuestion: null,
       history: [
         ...((newState?.history as any[]) || []),
         { role: "user", content: text },
@@ -658,21 +719,6 @@ async function handleOpenAiCore(params: {
 }
 
 /** exports */
-const sessionsOpenAi: { id?: number; client: OpenAI }[] = [];
-const limiter = RateLimiter.forGlobal();
-
-async function getOpenAiClient(companyId: number, overrideKey?: string) {
-  const apiKey = overrideKey || process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY not set");
-  if (overrideKey) return new OpenAI({ apiKey });
-  let session = sessionsOpenAi.find(s => s.id === companyId);
-  if (!session) {
-    session = { id: companyId, client: new OpenAI({ apiKey }) };
-    sessionsOpenAi.push(session);
-  }
-  return session.client;
-}
-
 export const handleOpenAi = async (...args: any[]) => {
   const params = normalizeArgs(args);
   if (!params?.ticket) throw new Error("handleOpenAi: ticket indefinido na chamada");
