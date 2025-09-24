@@ -15,6 +15,8 @@ import { shouldTransferToHuman } from "../../AI/TransferPolicy";
 import { LongTermMemory } from "../../AI/LongTermMemory";
 import Company from "../../../models/Company";
 import Ticket from "../../../models/Ticket";
+import Whatsapp from "../../../models/Whatsapp";
+import Queue from "../../../models/Queue";
 import { REAL_ESTATE_SYSTEM_PROMPT } from "../../Agents/templates/realEstatePrompt";
 import VisitService from "../../Visits/VisitService";
 
@@ -264,16 +266,50 @@ function normalizeArgs(args: any[]) {
   return { msg, wbot, contact, ticket, companyId, flow, isMenu, whatsapp };
 }
 
-/** ---------- resolve companyId de forma robusta ---------- */
-async function resolveCompanyId(ticket: any, fallback?: number | null): Promise<number | null> {
+/** ---------- resolve companyId de forma ultra-robusta ---------- */
+async function resolveCompanyId(ticket: any, contact?: any, fallback?: number | null): Promise<number | null> {
+  // 1) direto do ticket
   if (ticket?.companyId) return Number(ticket.companyId);
-  if (fallback) return Number(fallback);
+
+  // 2) veio do contato?
+  if (contact?.companyId) return Number(contact.companyId);
+
+  // 3) consulta o ticket no banco
   try {
     if (ticket?.id) {
       const t = await Ticket.findByPk(ticket.id);
       if (t?.companyId) return Number(t.companyId);
+      // 3.1) se não tiver no record (alguns modelos antigos), tenta via whatsappId/queueId
+      if ((t as any)?.whatsappId) {
+        const w = await Whatsapp.findByPk((t as any).whatsappId);
+        if (w?.companyId) return Number(w.companyId);
+      }
+      if ((t as any)?.queueId) {
+        const q = await Queue.findByPk((t as any).queueId);
+        if ((q as any)?.companyId) return Number((q as any).companyId);
+      }
     }
   } catch {}
+
+  // 4) se passaram explicitamente
+  if (fallback) return Number(fallback);
+
+  // 5) por fim, tenta via whatsappId do ticket recebido (não carregado do DB)
+  try {
+    if (ticket?.whatsappId) {
+      const w = await Whatsapp.findByPk(ticket.whatsappId);
+      if (w?.companyId) return Number(w.companyId);
+    }
+  } catch {}
+
+  // 6) ou via queueId recebido
+  try {
+    if (ticket?.queueId) {
+      const q = await Queue.findByPk(ticket.queueId);
+      if ((q as any)?.companyId) return Number((q as any).companyId);
+    }
+  } catch {}
+
   return null;
 }
 
@@ -325,7 +361,7 @@ async function handleOpenAiCore(params: {
     await maybeCaptureLead(text, contact);
 
     // resolve companyId (fix principal)
-    const companyId = await resolveCompanyId(ticket, params.companyId);
+    const companyId = await resolveCompanyId(ticket, contact, params.companyId ?? null);
     if (!companyId) {
       logger.error({ ctx: "handleOpenAi", reason: "companyId_unresolved", ticketId: ticket?.id }, "companyId is undefined");
       // não mande erro repetidamente
