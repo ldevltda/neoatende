@@ -118,49 +118,48 @@ function normalizeItems(items: any[], rolemap?: any): any[] {
   });
 }
 
-/** Extrai items/total respeitando schema + fallbacks comuns (data.data, data, results, array) */
+/** Extrai items/total respeitando schema, inclusive "$.*" (dicionário numerado) */
 function extractFromResponse(
   respData: any,
   schema?: { itemsPath?: string; totalPath?: string }
 ): { items: any[]; total?: number } {
-  const prefItems = schema?.itemsPath;
-  const prefTotal = schema?.totalPath;
+  const itemsPath = schema?.itemsPath || "data.items";
+  const totalPath = schema?.totalPath || "data.total";
 
-  const tryItemsPaths = [
-    prefItems,
-    "data.data",
-    "data.items",
-    "data",
-    "results",
-    "" // se respData já for o array
-  ].filter(Boolean) as string[];
-
-  for (const p of tryItemsPaths) {
-    let items: any = p ? deepGet(respData, p) : respData;
-    if (Array.isArray(items)) {
+  if (itemsPath === "$.*") {
+    if (Array.isArray(respData)) {
+      return { items: respData, total: deepGet(respData, totalPath, undefined) };
+    }
+    if (respData && typeof respData === "object") {
+      const items = Object.keys(respData)
+        .filter(k => /^\d+$/.test(k))
+        .map(k => (respData as any)[k])
+        .filter(v => v && typeof v === "object");
       const total =
-        (prefTotal ? deepGet(respData, prefTotal, undefined) : undefined) ??
-        deepGet(respData, "meta.total", undefined) ??
-        deepGet(respData, "total", undefined) ??
-        items.length;
+        deepGet(respData, totalPath, undefined) ??
+        (typeof (respData as any).total === "number" ? (respData as any).total : undefined);
       return { items, total };
     }
+    return { items: [], total: undefined };
   }
 
-  // nada deu certo
-  return { items: [], total: undefined };
+  const items = deepGet(respData, itemsPath, Array.isArray(respData) ? respData : []);
+  const total =
+    deepGet(respData, totalPath, undefined) ??
+    (Array.isArray(items) ? items.length : undefined);
+  return { items: Array.isArray(items) ? items : [], total };
 }
 
 /** Normaliza paginação salva como {strategy,page_param,size_param} -> {type,param,sizeParam} */
 function normalizePaginationShape(pag: any): PaginationConfig | undefined {
-  if (!pag) return { type: "page", param: "page", sizeParam: "per_page" }; // <- padrão amigável para Barbi
+  if (!pag) return undefined;
   if ((pag as any).type) return pag as PaginationConfig;
   if ((pag as any).strategy) {
     const typeMap: any = { page: "page", offset: "offset", cursor: "cursor", none: "none" };
     return {
       type: typeMap[pag.strategy] || "none",
       param: pag.page_param || (pag.strategy === "offset" ? "offset" : "page"),
-      sizeParam: pag.size_param || (pag.strategy === "offset" ? "limit" : "per_page")
+      sizeParam: pag.size_param || (pag.strategy === "offset" ? "limit" : "pageSize")
     };
   }
   return pag as PaginationConfig;
@@ -174,7 +173,7 @@ function applyPagination(
 ) {
   if (!pagination || pagination.type === "none") return;
   const pName = pagination.param || (pagination.type === "offset" ? "offset" : "page");
-  const sName = pagination.sizeParam || (pagination.type === "offset" ? "limit" : "per_page");
+  const sName = pagination.sizeParam || (pagination.type === "offset" ? "limit" : "pageSize");
   if (pagination.type === "page") {
     planned[pName] = page;
     planned[sName] = pageSize;
@@ -184,7 +183,69 @@ function applyPagination(
   }
 }
 
-/** ===== Executor de baixo nível ===== */
+/** ===== helpers de critérios ===== */
+
+/**
+ * Gera variações de nomes para o mesmo campo (snake/camel/pt-en/sinônimos).
+ * Ex.: { precoMax: 500000 } -> { precoMax, preco_max, maxPrice, valor_max, price_max }
+ */
+function expandKeyVariants(key: string): string[] {
+  const base = key.trim();
+
+  const snake = base
+    .replace(/[A-Z]/g, m => `_${m.toLowerCase()}`)
+    .replace(/__+/g, "_");
+
+  const camel = base.replace(/[_-](\w)/g, (_, c) => c.toUpperCase());
+
+  const variants = new Set<string>([base, snake, camel]);
+
+  // sinônimos comuns pt/en do nosso domínio
+  const map: Record<string, string[]> = {
+    cidade: ["city", "municipio"],
+    bairro: ["neighborhood", "bairro_nome"],
+    tipo: ["tipo_imovel", "type", "categoria"],
+    dormitorios: ["quartos", "bedrooms", "dorms"],
+    banheiros: ["bathrooms", "baths"],
+    vagas: ["garagens", "garagem", "vagas_garagem", "parking"],
+    areaMin: ["area_min", "metragem_min", "area_minima", "minArea"],
+    areaMax: ["area_max", "metragem_max", "area_maxima", "maxArea"],
+    precoMin: ["preco_min", "valor_min", "minPrice", "price_min"],
+    precoMax: ["preco_max", "valor_max", "maxPrice", "price_max"]
+  };
+
+  const norm = snake.toLowerCase();
+  Object.entries(map).forEach(([k, vals]) => {
+    const kSnake = k.replace(/[A-Z]/g, m => `_${m.toLowerCase()}`).toLowerCase();
+    const kCamel = kSnake.replace(/_(\w)/g, (_, c) => c.toUpperCase());
+    if (norm === kSnake || norm === kCamel || norm === k.toLowerCase()) {
+      vals.forEach(v => variants.add(v));
+    }
+  });
+
+  return Array.from(variants);
+}
+
+/** Constrói objeto de filtros “abertos” com variações de chaves */
+function buildOpenFilters(criteria: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(criteria || {})) {
+    if (v === undefined || v === null || v === "") continue;
+    const keys = expandKeyVariants(k);
+    for (const kk of keys) out[kk] = v;
+  }
+
+  // alguns consensos úteis (se vier “texto”, replica para q, query, s)
+  if (criteria.texto) {
+    out.q = out.q ?? criteria.texto;
+    out.query = out.query ?? criteria.texto;
+    out.s = out.s ?? criteria.texto;
+  }
+
+  return out;
+}
+
+/** ===== Executor de baixo nível (mantido) ===== */
 export async function runSearch(
   integration: IntegrationLike,
   { params = {}, page = 1, pageSize = 10, text, filtros = {} }: RunSearchInput
@@ -226,6 +287,16 @@ export async function runSearch(
     plannedParams.pesquisa = JSON.stringify(plannedParams.pesquisa);
   }
 
+  const reqCfg: AxiosRequestConfig = {
+    method,
+    url,
+    timeout,
+    headers: { ...(endpoint?.headers || {}) },
+    ...(method === "GET" ? { params: plannedParams } : { data: plannedParams })
+  };
+
+  applyAuthToRequest(reqCfg, auth);
+
   logger.debug(
     {
       ctx: "RunSearchService",
@@ -242,16 +313,6 @@ export async function runSearch(
     },
     "calling provider"
   );
-
-  const reqCfg: AxiosRequestConfig = {
-    method,
-    url,
-    timeout,
-    headers: { ...(endpoint?.headers || {}) },
-    ...(method === "GET" ? { params: plannedParams } : { data: plannedParams })
-  };
-
-  applyAuthToRequest(reqCfg, auth);
 
   const t0 = Date.now();
   let responseData: any;
@@ -277,39 +338,7 @@ export async function runSearch(
     throw err;
   }
 
-  let { items, total } = extractFromResponse(responseData, schema);
-
-  // ------- Fallback: se com filtros veio vazio, tenta SEM filtros -------
-  const hadFilters =
-    Object.keys({ ...(filtros?.pesquisa || {}), ...(filtros || {}) }).length > 0;
-
-  if ((!items || items.length === 0) && hadFilters) {
-    const plannedNoFilter: Record<string, any> = {};
-    applyPagination(plannedNoFilter, pagination, page, pageSize);
-
-    const reqCfg2: AxiosRequestConfig = {
-      method,
-      url,
-      timeout,
-      headers: { ...(endpoint?.headers || {}) },
-      ...(method === "GET" ? { params: plannedNoFilter } : { data: plannedNoFilter })
-    };
-    applyAuthToRequest(reqCfg2, auth);
-
-    try {
-      const resp2 = await axios.request(reqCfg2);
-      const parsed2 = extractFromResponse(resp2.data, schema);
-      if (parsed2.items && parsed2.items.length) {
-        // Integração está ok — mostra amostras para guiar o lead
-        items = parsed2.items.slice(0, Math.max(3, Math.min(5, pageSize)));
-        total = 0;
-      }
-    } catch (e) {
-      // ignora
-    }
-  }
-  // ---------------------------------------------------------------------
-
+  const { items, total } = extractFromResponse(responseData, schema);
   const normalized = normalizeItems(items, rolemap);
 
   logger.debug(
@@ -336,7 +365,9 @@ export async function runSearch(
  * Espera:
  *   { companyId, integrationId?, criteria, page, limit, ... }
  * - Busca a integração no banco (por id ou primeira da empresa)
- * - Passa `criteria` como query param `pesquisa` (obj → stringificado)
+ * - Passa `criteria` de duas formas:
+ *      1) pesquisa=<json>  (para provedores que esperam um blob)
+ *      2) filtros abertos  (query normal com variações de nomes)
  */
 export async function run(args: {
   companyId: number;
@@ -376,8 +407,10 @@ export async function run(args: {
     throw new Error("Nenhuma integração de inventário encontrada para a empresa.");
   }
 
-  // 2) Monta filtros para o executor de baixo nível
-  const filtros = { pesquisa: criteria };
+  // 2) Monta filtros para o executor de baixo nível:
+  //    - Enviamos *ambos*: { pesquisa: criteria } e os filtros “abertos”
+  const openFilters = buildOpenFilters(criteria);
+  const filtros = { ...openFilters, pesquisa: criteria };
 
   // 3) Chama o executor principal
   return runSearch(integration, {
@@ -387,5 +420,4 @@ export async function run(args: {
   });
 }
 
-// Deixa super-compatível com imports variados
 export default run;

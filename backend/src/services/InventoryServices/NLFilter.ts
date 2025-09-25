@@ -82,10 +82,7 @@ function parseIntSafe(v: any): number | undefined {
   return isNaN(n) ? undefined : n;
 }
 
-/** Accessor tolerante:
- * - aceita path "a.b.c"
- * - casa chave ignorando acentos e maiúsculas/minúsculas
- */
+/** Accessor tolerante (paths e chaves normalizadas) */
 function getField(obj: any, aliases: string[]) {
   for (const path of aliases) {
     let cur: any = obj;
@@ -147,6 +144,28 @@ const CITY_KNOWN = [
   "biguaçu", "biguacu", "curitiba", "sao paulo", "são paulo",
   "rio de janeiro"
 ];
+
+// 🌎 Mapa de bairros → cidade (heurística amigável para Grande Floripa)
+const NEIGHBORHOOD_TO_CITY: Record<string, { city: string; state?: string }> = {
+  // São José
+  "campinas": { city: "são josé", state: "SC" },
+  "kobrasol": { city: "são josé", state: "SC" },
+  "barreiros": { city: "são josé", state: "SC" },
+  "roel": { city: "são josé", state: "SC" },
+  "forquilhinhas": { city: "são josé", state: "SC" },
+  "forquilhas": { city: "são josé", state: "SC" },
+  "santa luzia": { city: "são josé", state: "SC" },
+
+  // Florianópolis
+  "trindade": { city: "florianópolis", state: "SC" },
+  "centro": { city: "florianópolis", state: "SC" },
+  "coqueiros": { city: "florianópolis", state: "SC" }, // às vezes tratado como bairro de Floripa
+
+  // Palhoça (exemplos)
+  "pagani": { city: "palhoça", state: "SC" },
+  "pedra branca": { city: "palhoça", state: "SC" }
+};
+
 // remove prefixos do tipo "bairro", "bairro de", "no bairro"
 function cleanNeighborhood(s: string) {
   return norm(s).replace(/^bairro\s+de\s+/, "")
@@ -187,12 +206,10 @@ export function parseCriteriaFromText(text: string): Criteria {
     crit.city = cityState[1].replace("sao", "são");
     crit.state = cityState[2].toUpperCase();
   } else {
-    // “em <cidade>”
+    // “em <cidade|bairro>”
     const cityOnly = t.match(/\bem\s+([a-z0-9\s\-]+)\b/);
     if (cityOnly?.[1]) {
       const candidate = cityOnly[1].trim();
-      // só aceita como cidade se estiver entre as cidades conhecidas;
-      // caso contrário, trate como bairro (evita “Campinas” virar cidade-SP)
       if (CITY_KNOWN.includes(candidate)) {
         crit.city = candidate.replace("sao", "são");
       } else if (!crit.neighborhood) {
@@ -203,41 +220,58 @@ export function parseCriteriaFromText(text: string): Criteria {
     if (st) crit.state = st[1].toUpperCase();
   }
 
-  // Imóveis
-  let q = t.match(/(\d+)\s*(quartos?|dormitorios?)/);
+  // Heurística: se informaram só o bairro e ele está no nosso mapa, infere a cidade
+  if (!crit.city && crit.neighborhood) {
+    const key = cleanNeighborhood(crit.neighborhood);
+    const mapped = NEIGHBORHOOD_TO_CITY[key];
+    if (mapped) {
+      crit.city = mapped.city;
+      if (!crit.state && mapped.state) crit.state = mapped.state;
+    }
+  }
+
+  // -------- Imóveis --------
+  // quartos/dormitórios: inclui “qtos/qt/dorms/q”
+  let q = t.match(/\b(\d+)\s*(quartos?|q(?:tos?)?|dorms?|dormitorios?)\b/);
   if (q?.[1]) crit.bedrooms = parseInt(q[1], 10);
   if (!crit.bedrooms) {
     const mq = t.match(/\b(um|uma|dois|duas|tres|três|quatro|cinco|seis|sete|oito|nove|dez)\s*(quartos?|dormitorios?)\b/);
     if (mq?.[1]) crit.bedrooms = numberWordsPt[mq[1]];
   }
-  const types = ["apartamento", "casa", "kitnet", "studio", "sobrado", "terreno"];
-  for (const tp of types) if (t.includes(tp)) { crit.typeHint = tp; break; }
 
-  // garagem
-  if (/\b(com|com\s+vaga[s]?|vaga|vagas|garagem)\b/.test(t)) crit.hasGarage = true;
+  // tipo de imóvel via mapa de sinônimos
+  for (const [type, synonyms] of Object.entries(TYPE_MAP)) {
+    if (synonyms.some(s => t.includes(norm(s)))) { crit.typeHint = type; break; }
+  }
+
+  // garagem / vagas
   if (/\b(sem\s+garagem|sem\s+vaga)\b/.test(t)) crit.hasGarage = false;
+  else if (/\b(\d+)\s*vagas?\b/.test(t) || /\b(com|com\s+vaga[s]?|vaga|vagas|garagem)\b/.test(t)) {
+    crit.hasGarage = true;
+  }
 
-  const areaMin = t.match(/(area|área)\s*(minima|min)\s*(\d+\.?\d*)/);
-  const areaMax = t.match(/(area|área)\s*(maxima|max)\s*(\d+\.?\d*)/);
+  // área (aceita “m2/m²” opcional, e “mín/máx”)
+  const areaMin = t.match(/\b(area|área)\s*(minima|min)\s*(\d+[\d,\.]*)/);
+  const areaMax = t.match(/\b(area|área)\s*(maxima|max)\s*(\d+[\d,\.]*)/);
   if (areaMin?.[3]) crit.areaMin = toNumber(areaMin[3]);
   if (areaMax?.[3]) crit.areaMax = toNumber(areaMax[3]);
 
-  // Preços
+  // -------- Preços --------
   const priceMax1 = t.match(/\bat[eé]\s*(r?\$?\s*[\d\.\,]+(?:\s*(k|mil|milhoes|milhão))?)\b/);
   if (priceMax1?.[1]) crit.priceMax = normalizePrice(priceMax1[1]);
-  const priceRange = t.match(/entre\s*(r?\$?\s*[\d\.\,]+(?:\s*(k|mil|milhoes|milhão))?)\s*e\s*(r?\$?\s*[\d\.\,]+(?:\s*(k|mil|milhoes|milhão))?)/);
+  const priceRange = t.match(/\bentre\s*(r?\$?\s*[\d\.\,]+(?:\s*(k|mil|milhoes|milhão))?)\s*e\s*(r?\$?\s*[\d\.\,]+(?:\s*(k|mil|milhoes|milhão))?)/);
   if (priceRange?.[1]) crit.priceMin = normalizePrice(priceRange[1]);
   if (priceRange?.[2]) crit.priceMax = normalizePrice(priceRange[2]);
 
-  // Veículos
-  const yearTo = t.match(/(ate|até)\s*(\d{4})\b/);
-  const yearFrom = t.match(/(a partir de|de)\s*(\d{4})\b/);
+  // -------- Veículos --------
+  const yearTo = t.match(/\b(ate|até)\s*(\d{4})\b/);
+  const yearFrom = t.match(/\b(a partir de|de)\s*(\d{4})\b/);
   const yearExact = t.match(/\bano\s*(\d{4})\b/);
   if (yearTo?.[2]) crit.yearMax = parseInt(yearTo[2], 10);
   if (yearFrom?.[2]) crit.yearMin = parseInt(yearFrom[2], 10);
   if (yearExact?.[1]) { crit.yearMin = parseInt(yearExact[1], 10); crit.yearMax = parseInt(yearExact[1], 10); }
 
-  const km = t.match(/(km|quilometragem)\s*(ate|até)?\s*([\d\.\,]+)/);
+  const km = t.match(/\b(km|quilometragem)\s*(ate|até)?\s*([\d\.\,]+)\b/);
   if (km?.[3]) crit.kmMax = toNumber(km[3]);
 
   // Marca / modelo (heurístico)
@@ -260,7 +294,7 @@ export function parseCriteriaFromText(text: string): Criteria {
   else if (t.includes("diesel")) crit.fuel = "diesel";
   else if (t.includes("eletric") || t.includes("hibrid")) crit.fuel = "eletrico";
 
-  // Saúde
+  // -------- Saúde --------
   const specialties = ["dentista","dermato","dermatologia","cardiologia","oftalmo","psicologo","psiquiatra","ortopedista","gineco","pediatra","fisioterapia","nutricionista","fono"];
   for (const s of specialties) if (t.includes(s)) { crit.specialty = s; break; }
   const conv = t.match(/\b(amil|unimed|bradesco|hapvida|prevent|sulamerica|sulamerica)\b/);
@@ -271,13 +305,13 @@ export function parseCriteriaFromText(text: string): Criteria {
   const dateIso = t.match(/\b(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b/);
   if (dateIso) crit.date = dateIso[0];
 
-  // Beleza / Pet / Serviços
+  // -------- Beleza / Pet / Serviços --------
   const services = ["corte","corte de cabelo","barba","sobrancelha","progressiva","manicure","pedicure","banho","tosa","consulta","vacina","banho e tosa"];
   for (const s of services) if (t.includes(s)) { crit.service = s; break; }
   const prof = t.match(/\bcom\s+([a-z]{2,})\b/);
   if (prof?.[1]) crit.professional = prof[1];
 
-  // Educação / Academias
+  // -------- Educação / Academias --------
   const modalities = ["online","presencial","hibrido","híbrido"];
   for (const mmm of modalities) if (t.includes(mmm)) { crit.modality = mmm.replace("híbrido", "hibrido"); break; }
   const courses = ["ingles","espanhol","excel","programacao","yoga","pilates","crossfit","musculacao"];
@@ -285,7 +319,7 @@ export function parseCriteriaFromText(text: string): Criteria {
   const schedules = ["manha","tarde","noite","full time"];
   for (const s of schedules) if (t.includes(s)) { crit.schedule = s; break; }
 
-  // Eventos
+  // -------- Eventos --------
   const cap = t.match(/\b(para|ate|até)\s*(\d+)\s*(pessoas|convidados|lugares)\b/);
   if (cap?.[2]) crit.capacityMin = parseInt(cap[2], 10);
 
