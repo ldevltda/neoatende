@@ -1,5 +1,4 @@
 // backend/src/services/WbotServices/listeners/handleOpenAi.ts
-
 import OpenAI from "openai";
 import * as Planner from "../../AI/Planner";
 import { loadState, saveState } from "../../InventoryServices/ConversationState";
@@ -7,7 +6,6 @@ import * as InventoryFormatter from "../../InventoryServices/InventoryFormatter"
 import * as RunSearchService from "../../InventoryServices/RunSearchService";
 import * as NLFilter from "../../InventoryServices/NLFilter";
 import InventoryIntegration from "../../../models/InventoryIntegration";
-import { sanitizeName, keepOnlySpecifiedChars } from "./helpers";
 import { logger } from "../../../utils/logger";
 import { proto } from "baileys";
 import { RateLimiter } from "../../AI/RateLimiter";
@@ -20,13 +18,13 @@ import Whatsapp from "../../../models/Whatsapp";
 import Queue from "../../../models/Queue";
 import VisitService from "../../Visits/VisitService";
 
-// >>> NOVOS IMPORTS
+// === NOVOS IMPORTS (financiamento + templates + score) ===
 import { calcularBudget } from "../../Finance/FinancingCalculator";
 import { T as WappTmpl } from "../../Agents/templates/whatsappTemplates";
 import { scoreLead } from "../../Leads/scoreLead";
-// <<< NOVOS IMPORTS
 
-/** -------------- Prompt dinâmico por segmento -------------- */
+// ---------------------------------------------------------
+/** utils: dynamic import com fallback require */
 async function safeImport(modulePath: string): Promise<any | null> {
   try {
     // @ts-ignore
@@ -37,28 +35,28 @@ async function safeImport(modulePath: string): Promise<any | null> {
   }
 }
 
-// Usa o compositor (prioriza prompt do painel + guardrails por segmento)
+/** Prompt dinâmico (persona + guardrails) */
 async function composeSystemPrompt(companyId: number, userPromptFromDB?: string) {
   try {
     const mod = await safeImport("../../Prompt/composeSystemPrompt");
-    if (mod?.composeSystemPrompt) {
-      return await mod.composeSystemPrompt({ companyId, userPromptFromDB });
-    }
+    if (mod?.composeSystemPrompt) return await mod.composeSystemPrompt({ companyId, userPromptFromDB });
   } catch {}
-  // fallback mínimo
   const company = await Company.findByPk(companyId);
   const nomeEmpresa = company?.name || "sua empresa";
   const base = (userPromptFromDB || "").trim() || `Você é consultor(a) humano(a) da ${nomeEmpresa}.`;
-  const guardrails = `Tom: claro, caloroso, direto, sem jargões. Fale em 1ª pessoa.
-Nunca prometa aprovação de crédito. Pergunte no MÁXIMO 2 coisas por mensagem.
-Se o pedido fugir do escopo jurídico/contábil, explique limites e direcione.`;
+  const guardrails =
+    `Tom: claro, caloroso, direto, sem jargões. 1ª pessoa. Máx. 2 perguntas por mensagem.
+- Não invente preço, número de vagas ou prazos. Se não souber, pergunte.
+- Não prometa “vou buscar e retorno”; sempre peça o próximo passo no chat.
+- Nunca prometa aprovação de crédito.
+- Se sair do escopo jurídico/contábil, explique limites e direcione.`;
   return [base, guardrails].join("\n\n");
 }
 
-/** -------------- renderers fallback -------------- */
+/** Render WhatsApp (fallback) */
 function defaultWhatsAppRenderer(items: any[], maxItems = 3): string {
   if (!Array.isArray(items) || items.length === 0) {
-    return "Não encontrei opções com esses critérios agora. Quer ajustar bairro, faixa de preço ou número de quartos para te mostrar alternativas?";
+    return "Não encontrei opções com esses critérios agora. Quer ajustar *bairro/cidade* e *tipo ou nº de dormitórios* pra eu te mostrar alternativas?";
   }
   const take = items.slice(0, maxItems).map((p: any, i: number) => {
     const title = p.TituloSite || p.Titulo || p.title || p.titulo || p.name || p.nome || `Imóvel ${i + 1}`;
@@ -82,7 +80,7 @@ function defaultWhatsAppRenderer(items: any[], maxItems = 3): string {
     return lines.join("\n");
   });
 
-  return `🌟 *Opções selecionadas para você!*\n\n${take.join("\n\n")}\n\n👉 Quer ver por dentro? Agendo sua visita agora.`;
+  return `🌟 *Opções selecionadas pra você*\n\n${take.join("\n\n")}\n\n👉 Quer ver por dentro? Agendo sua visita agora.`;
 }
 
 function defaultWhatsAppDetails(item: any): string {
@@ -112,7 +110,7 @@ function defaultWhatsAppDetails(item: any): string {
   return `${parts.join("\n")}\n\n👉 Quer agendar uma visita? Posso te sugerir dois horários.`;
 }
 
-/** -------------- polimento opcional com LLM -------------- */
+/** Polimento opcional */
 async function polishWithLLM(
   client: OpenAI,
   model: string,
@@ -129,13 +127,12 @@ async function polishWithLLM(
           role: "system",
           content:
             (systemPrompt || "Responda em pt-BR, cordial e objetivo.") +
-            "\nRegra: não altere preços, links ou números. Apenas melhore o tom e a clareza."
+            "\nReescreva sem inventar dados. Remova frases como 'vou buscar e retorno'."
         },
         {
           role: "user",
           content:
-            `Reescreva levemente a mensagem abaixo, mantendo os dados exatos (códigos, preços, links, números). ` +
-            `Melhore o tom e finalize com CTA curto.\n\n===\n${text}\n===`
+            `Reescreva levemente mantendo *todos os números/links* iguais. Finalize com CTA curto.\n\n===\n${text}\n===`
         }
       ]
     });
@@ -146,7 +143,7 @@ async function polishWithLLM(
   }
 }
 
-/** -------------- prompt lookup -------------- */
+/** Prompt Lookup */
 type PromptConfig = {
   prompt?: string;
   temperature?: number;
@@ -193,7 +190,7 @@ async function getPromptForTicket(companyId: number | null | undefined, queueId?
   return {};
 }
 
-/** -------------- classificação e filtros -------------- */
+/** Planner compat */
 async function callPlanner(args: any) {
   const anyPlanner: any = Planner as any;
   if (typeof anyPlanner.plan === "function") return anyPlanner.plan(args);
@@ -203,6 +200,7 @@ async function callPlanner(args: any) {
   return { intent: inv ? "browse_inventory" : "smalltalk", query_ready: inv, slots: {}, followups: inv ? [] : ["Me conta um pouco mais, por favor."] };
 }
 
+/** Escolha de integração */
 async function chooseIntegrationByTextCompat(companyId: number | null | undefined, text: string) {
   if (!companyId) return null;
   const all = await InventoryIntegration.findAll({ where: { companyId }, order: [["id", "ASC"]] });
@@ -219,41 +217,61 @@ async function chooseIntegrationByTextCompat(companyId: number | null | undefine
   return (scored[0]?.score || 0) > 0 ? scored[0].intg : all[0];
 }
 
+/** Criteria */
 type Criteria = {
   cidade?: string; bairro?: string; tipo?: string;
   dormitorios?: number | string; vagas?: number | string;
   precoMin?: number | string; precoMax?: number | string;
   areaMin?: number | string; areaMax?: number | string;
   texto?: string;
-
-  // Campos “financeiros” opcionais (se teu parser já extrair)
-  renda?: number | string;
-  entrada?: number | string;
-  fgts?: boolean;
-  idade?: number | string;
+  // financeiros (opcionais)
+  renda?: number | string; entrada?: number | string; fgts?: boolean; idade?: number | string;
   momento?: "agora"|"1-3m"|"3-6m"|"pesquisando";
 };
 
-function normalizeCriteria(anyC: any): Criteria {
-  if (!anyC) return {};
-  const c: Criteria = {};
-  c.cidade = anyC.cidade || anyC.city;
-  c.bairro = anyC.bairro || anyC.neighborhood;
-  c.tipo = anyC.tipo || anyC.tipo_imovel || anyC.type || anyC.typeHint;
-  c.dormitorios = anyC.dormitorios || anyC.quartos || anyC.bedrooms;
-  c.vagas = anyC.vagas || anyC.garagem || anyC.parking;
-  c.precoMin = anyC.precoMin || anyC.preco_min || anyC.priceMin;
-  c.precoMax = anyC.precoMax || anyC.preco_max || anyC.priceMax;
-  c.areaMin = anyC.areaMin || anyC.area_min || anyC.areaMin;
-  c.areaMax = anyC.areaMax || anyC.area_max || anyC.areaMax;
-  c.texto = anyC.texto || anyC.text;
+/** extração básica sem depender do teu parser (melhora recall) */
+function crudeExtract(text: string) {
+  const t = (text || "").toLowerCase();
+  const slots: any = {};
+  const mDorm = t.match(/(\d+)\s*(dorm|quartos?)/);
+  if (mDorm) slots.dormitorios = Number(mDorm[1]);
+  const mBairro = t.match(/\b(campinas|kobrasol|estreito|trindade|capoeiras|itacorubi)\b/i);
+  if (mBairro) slots.bairro = mBairro[1];
+  const mCidade = t.match(/\b(flori(an[óo]polis|opolis)|s[aã]o jos[eé])\b/i);
+  if (mCidade) slots.cidade = /flori/.test(mCidade[0].toLowerCase()) ? "Florianópolis" : "São José";
+  if (/apart|ap[eê]|apto/.test(t)) slots.tipo = "apartamento";
+  if (/casa/.test(t)) slots.tipo = "casa";
+  const mPrecoMax = t.match(/at[ée]\s*R?\$?\s*([\d\.\,]+)/i);
+  if (mPrecoMax) slots.precoMax = mPrecoMax[1];
+  const mRenda = t.match(/renda\s*(de|~|aprox\.?|:)?\s*R?\$?\s*([\d\.\,]+)/i);
+  if (mRenda) slots.renda = mRenda[2];
+  const mEntrada = t.match(/entrada\s*(de|~|aprox\.?|:)?\s*R?\$?\s*([\d\.\,]+)/i);
+  if (mEntrada) slots.entrada = mEntrada[2];
+  if (/\bfgts\b/i.test(text)) slots.fgts = true;
+  return slots;
+}
 
-  // extras
-  c.renda = anyC.renda || anyC.income;
-  c.entrada = anyC.entrada || anyC.downPayment;
-  c.fgts = anyC.fgts ?? undefined;
-  c.idade = anyC.idade || anyC.age;
-  c.momento = anyC.momento || anyC.moment;
+function normalizeCriteria(anyC: any): Criteria {
+  const crude = crudeExtract(anyC?.texto || "");
+  const cIn = { ...(anyC || {}), ...crude };
+
+  const c: Criteria = {};
+  c.cidade = cIn.cidade || cIn.city;
+  c.bairro = cIn.bairro || cIn.neighborhood;
+  c.tipo = cIn.tipo || cIn.tipo_imovel || cIn.type || cIn.typeHint;
+  c.dormitorios = cIn.dormitorios || cIn.quartos || cIn.bedrooms;
+  c.vagas = cIn.vagas || cIn.garagem || cIn.parking;
+  c.precoMin = cIn.precoMin || cIn.preco_min || cIn.priceMin;
+  c.precoMax = cIn.precoMax || cIn.preco_max || cIn.priceMax;
+  c.areaMin = cIn.areaMin || cIn.area_min || cIn.areaMin;
+  c.areaMax = cIn.areaMax || cIn.area_max || cIn.areaMax;
+  c.texto = cIn.texto || cIn.text;
+
+  c.renda = cIn.renda || cIn.income;
+  c.entrada = cIn.entrada || cIn.downPayment;
+  c.fgts = cIn.fgts ?? undefined;
+  c.idade = cIn.idade || cIn.age;
+  c.momento = cIn.momento || cIn.moment;
 
   return c;
 }
@@ -281,7 +299,7 @@ function enoughForSearch(c: Criteria): boolean {
   const hasSpec = !!(c.tipo || c.dormitorios || c.precoMax || c.precoMin || c.areaMin || c.areaMax);
   return hasLocal && hasSpec;
 }
-function missingSlot(c: Criteria): string | null {
+function missingSlot(c: Criteria): "local" | "tipo_ou_dormitorios" | "preco" | null {
   if (!c.bairro && !c.cidade) return "local";
   if (!c.tipo && !c.dormitorios) return "tipo_ou_dormitorios";
   if (!c.precoMax && !c.precoMin) return "preco";
@@ -294,7 +312,6 @@ async function callParseCriteria(companyId: number | null | undefined, text: str
     if (svc?.parseCriteria) return normalizeCriteria(await svc.parseCriteria(companyId, text, slots));
   } catch {}
   try {
-    // usa o parser do NLFilter (versão atual)
     const anyNF: any = NLFilter as any;
     if (typeof anyNF.parseCriteriaFromText === "function") return normalizeCriteria(await anyNF.parseCriteriaFromText(text));
     if (typeof anyNF.parseCriteria === "function") return normalizeCriteria(await anyNF.parseCriteria(text));
@@ -303,7 +320,7 @@ async function callParseCriteria(companyId: number | null | undefined, text: str
   return normalizeCriteria({ texto: text, ...slots });
 }
 
-/** -------------- intenções extras -------------- */
+/** intenções auxiliares */
 function askLGPDOnce(state: any): string | null {
   if (state?.lgpdShown) return null;
   return "Aviso LGPD: ao compartilhar dados pessoais (nome, e-mail, telefone), você concorda com nosso uso para contato sobre os imóveis. Você pode pedir para parar a qualquer momento.";
@@ -327,19 +344,16 @@ function detectCode(text: string): string | null {
   const m = text.toLowerCase().match(/(c[oó]d(?:igo)?|ref(?:er[êe]ncia)?)\s*[:#]?\s*([a-z0-9\-]+)/i);
   return (m && m[2]) ? m[2] : null;
 }
-
-// >>> Detectores novos
 function detectFinanceIntent(text: string) {
   const t = (text || "").toLowerCase();
   return /(financi|simula|sac|price|fgts|mcmv|parcela|juros)/.test(t);
 }
 function detectSellerIntent(text: string) {
   const t = (text || "").toLowerCase();
-  return /(vender|avaliar|anunciar|colocar à venda|colocar a venda|colocar a venda)/.test(t);
+  return /(vender|avaliar|anunciar|colocar à venda|colocar a venda)/.test(t);
 }
-// <<< Detectores novos
 
-/** -------------- lead básico -------------- */
+/** captura email/telefone */
 async function maybeCaptureLead(text: string, contact: any) {
   try {
     const email = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [])[0];
@@ -351,7 +365,7 @@ async function maybeCaptureLead(text: string, contact: any) {
   } catch {}
 }
 
-/** -------------- busca -------------- */
+/** run search */
 async function callRunSearch(args: any) {
   try {
     if (typeof (RunSearchService as any).default === "function") return await (RunSearchService as any).default(args);
@@ -362,14 +376,14 @@ async function callRunSearch(args: any) {
   return { items: [], total: 0, page: 1, pageSize: args?.limit || 5, raw: null };
 }
 
-/** -------------- normalização de parâmetros -------------- */
+/** normalização dos args */
 function normalizeArgs(args: any[]) {
   if (args.length === 1 && typeof args[0] === "object") return args[0];
   const [msg, wbot, contact, ticket, companyId, , , , flow, isMenu, whatsapp] = args as any[];
   return { msg, wbot, contact, ticket, companyId, flow, isMenu, whatsapp };
 }
 
-/** -------------- resolve companyId robusto -------------- */
+/** companyId resolver robusto */
 async function resolveCompanyId(ticket: any, contact?: any, fallback?: number | null): Promise<number | null> {
   if (ticket?.companyId) return Number(ticket.companyId);
   if (contact?.companyId) return Number(contact.companyId);
@@ -403,7 +417,7 @@ async function resolveCompanyId(ticket: any, contact?: any, fallback?: number | 
   return null;
 }
 
-/** -------------- extrator de fatos estruturados -------------- */
+/** fatos estruturados simples */
 async function extractStructuredFacts(text: string, reply: string) {
   try {
     const mod = await safeImport("../../AI/FactExtractors");
@@ -414,16 +428,16 @@ async function extractStructuredFacts(text: string, reply: string) {
   const phone = (text.match(/\+?55?\s*\(?\d{2}\)?\s*\d{4,5}[-\s]?\d{4}/g) || [])[0];
   if (email) facts.push({ key: "email", value: email.toLowerCase() });
   if (phone) facts.push({ key: "telefone", value: phone.replace(/\D/g, "") });
-  const dorm = text.match(/(\d)\s*(dormit[óo]rios?|quartos?)/i);
+  const dorm = text.match(/(\d+)\s*(dormit[óo]rios?|quartos?)/i);
   if (dorm) facts.push({ key: "dormitorios", value: dorm[1] });
-  const vagas = text.match(/(\d)\s*(vagas?|garagem)/i);
-  if (vagas) facts.push({ key: "vagas", value: vagas[1] });
+  const bairro = text.match(/\b(campinas|kobrasol|estreito|trindade|capoeiras|itacorubi)\b/i);
+  if (bairro) facts.push({ key: "bairro", value: bairro[1] });
   const precoMax = text.match(/at[ée]\s*R?\$?\s*([\d\.\,]+)/i);
   if (precoMax) facts.push({ key: "precoMax", value: precoMax[1] });
   return facts;
 }
 
-/** -------------- OpenAI client cache -------------- */
+/** OpenAI client cache */
 const sessionsOpenAi: { id?: number; client: OpenAI }[] = [];
 const limiter = RateLimiter.forGlobal();
 
@@ -439,7 +453,7 @@ async function getOpenAiClient(companyId: number, overrideKey?: string) {
   return session.client;
 }
 
-/** Mapeia nossos Criteria -> Criteria do NLFilter para ranking consistente */
+/** NLFilter criteria mapper */
 function toNLFilterCriteria(c: Criteria): NLFilter.Criteria {
   return {
     city: c.cidade || undefined,
@@ -453,7 +467,7 @@ function toNLFilterCriteria(c: Criteria): NLFilter.Criteria {
   };
 }
 
-/** -------------- núcleo -------------- */
+/** CORE */
 async function handleOpenAiCore(params: {
   msg: proto.IWebMessageInfo;
   wbot: any;
@@ -480,7 +494,7 @@ async function handleOpenAiCore(params: {
 
     await maybeCaptureLead(text, contact);
 
-    // resolve companyId
+    // company
     const companyId = await resolveCompanyId(ticket, contact, params.companyId ?? null);
     if (!companyId) {
       logger.error({ ctx: "handleOpenAi", reason: "companyId_unresolved", ticketId: ticket?.id }, "companyId is undefined");
@@ -493,13 +507,10 @@ async function handleOpenAiCore(params: {
       return;
     }
 
-    // PROMPT dinâmico por segmento + prompt do painel
+    // prompt & client
     const promptCfg = await getPromptForTicket(companyId, ticket.queueId);
     let segment: string = "imoveis";
-    try {
-      const company = await Company.findByPk(companyId);
-      if (company?.segment) segment = String(company.segment);
-    } catch {}
+    try { const company = await Company.findByPk(companyId); if (company?.segment) segment = String(company.segment); } catch {}
     const systemPrompt = await composeSystemPrompt(companyId, promptCfg.prompt);
 
     const temperature = typeof promptCfg.temperature === "number" ? promptCfg.temperature : 0.4;
@@ -512,36 +523,31 @@ async function handleOpenAiCore(params: {
     const convoState: any = await loadState(ticket.id).catch(() => null);
     const longMem = await ltm.read(companyId, contact?.id);
 
-    const memoryContext = longMem.length
-      ? `Memória do cliente: ${longMem.map(m => `${m.key}=${m.value}`).join(", ")}` : "";
+    const memoryContext = longMem.length ? `Memória do cliente: ${longMem.map(m => `${m.key}=${m.value}`).join(", ")}` : "";
 
-    // ===== Extrai e acumula critérios (slots) =====
+    // slots
     const parsedNow = await callParseCriteria(companyId, text, {});
     const lastCriteria: Criteria = convoState?.lastCriteria || {};
     const mergedCriteria = mergeCriteria(lastCriteria, parsedNow);
     await saveState(ticket.id, { ...(convoState || {}), lastCriteria: mergedCriteria });
 
-    // Decide intenção
-    let plan = await callPlanner({
-      text, memoryContext, lastState: convoState, longMem, companyId
-    });
+    // intenção
+    let plan = await callPlanner({ text, memoryContext, lastState: convoState, longMem, companyId });
 
-    // Força inventário se já der para buscar
+    // força inventário quando der pra buscar
     if (segment === "imoveis" && enoughForSearch(mergedCriteria)) {
       plan = { intent: "browse_inventory", query_ready: true, slots: {}, followups: [] };
     }
 
-    // ===== atalhos: detalhes / paginação se já houve busca =====
+    // atalhos (detalhes/paginação)
     if (segment === "imoveis" && convoState?.lastSearch?.items?.length) {
       const idx = detectDetailsByIndex(text);
       if (idx !== null && idx > 0) {
         const arr = (convoState.lastSearch.pageItems as any[]) || (convoState.lastSearch.items as any[]);
         const item = arr[idx - 1];
         let detailsText = defaultWhatsAppDetails(item);
-        try {
-          const rmod = await safeImport("../../InventoryServices/Renderers/WhatsAppRenderer");
-          if (rmod?.renderPropertyDetails) detailsText = rmod.renderPropertyDetails(item);
-        } catch {}
+        try { const rmod = await safeImport("../../InventoryServices/Renderers/WhatsAppRenderer");
+          if (rmod?.renderPropertyDetails) detailsText = rmod.renderPropertyDetails(item); } catch {}
         const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: detailsText });
         try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
         return;
@@ -549,15 +555,11 @@ async function handleOpenAiCore(params: {
       const code = detectCode(text);
       if (code) {
         const allItems = (convoState.lastSearch.items as any[]) || [];
-        const item = allItems.find(it =>
-          String(it.codigo || it.code || it.slug || it.id).toLowerCase() === code.toLowerCase()
-        );
+        const item = allItems.find(it => String(it.codigo || it.code || it.slug || it.id).toLowerCase() === code.toLowerCase());
         if (item) {
           let detailsText = defaultWhatsAppDetails(item);
-          try {
-            const rmod = await safeImport("../../InventoryServices/Renderers/WhatsAppRenderer");
-            if (rmod?.renderPropertyDetails) detailsText = rmod.renderPropertyDetails(item);
-          } catch {}
+          try { const rmod = await safeImport("../../InventoryServices/Renderers/WhatsAppRenderer");
+            if (rmod?.renderPropertyDetails) detailsText = rmod.renderPropertyDetails(item); } catch {}
           const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: detailsText });
           try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
           return;
@@ -579,17 +581,13 @@ async function handleOpenAiCore(params: {
           locale: "pt-BR"
         });
 
-        // HARD-FILTER + RANKING antes de mostrar
         const nlCrit = toNLFilterCriteria(criteria);
         const ranked = NLFilter.filterAndRankItems(searchRes.items || [], nlCrit);
         const pageItems = NLFilter.paginateRanked(ranked, 1, 3);
 
         let rendered = defaultWhatsAppRenderer(pageItems, 3);
-        try {
-          const rmod = await safeImport("../../InventoryServices/Renderers/WhatsAppRenderer");
-          if (rmod?.renderWhatsAppList)
-            rendered = rmod.renderWhatsAppList(pageItems, { maxItems: 3 });
-        } catch {}
+        try { const rmod = await safeImport("../../InventoryServices/Renderers/WhatsAppRenderer");
+          if (rmod?.renderWhatsAppList) rendered = rmod.renderWhatsAppList(pageItems, { maxItems: 3 }); } catch {}
 
         if (rendered && process.env.POLISH_WITH_LLM === "true") {
           rendered = await polishWithLLM(client, model, systemPrompt, rendered);
@@ -603,8 +601,8 @@ async function handleOpenAiCore(params: {
             page: nextPage,
             pageSize,
             total: searchRes.total || 0,
-            items: ranked,       // guarda ordenado
-            pageItems            // guarda os 3 mostrados
+            items: ranked,
+            pageItems
           }
         });
 
@@ -614,18 +612,27 @@ async function handleOpenAiCore(params: {
       }
     }
 
-    // ===== FLUXO DE FINANCIAMENTO (SAC/PRICE + faixa estimada) =====
+    // ===== FINANCIAMENTO =====
     if (detectFinanceIntent(text)) {
-      const renda = Number(String((mergedCriteria as any).renda || "").replace(/[^\d]/g, "")) || 0;
-      const entrada = Number(String((mergedCriteria as any).entrada || "").replace(/[^\d]/g, "")) || 0;
-      const fgtsFlag = !!(mergedCriteria as any).fgts;
-      const idade = Number(String((mergedCriteria as any).idade || "").replace(/[^\d]/g, "")) || undefined;
+      const rendaNum = Number(String((mergedCriteria as any).renda || "").replace(/[^\d]/g, "")) || 0;
+      const entradaNum = Number(String((mergedCriteria as any).entrada || "").replace(/[^\d]/g, "")) || 0;
+      const hasFGTS = !!(mergedCriteria as any).fgts;
+      const idadeNum = Number(String((mergedCriteria as any).idade || "").replace(/[^\d]/g, "")) || undefined;
+
+      // se não tem renda -> pedir renda + entrada/FGTS (máx 2 perguntas)
+      if (!rendaNum) {
+        const ask = `Pra simular com precisão: qual é a *renda familiar mensal* (aprox.)? ` +
+          `Você tem *entrada* (valor) ou vai usar *FGTS*?`;
+        const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: ask });
+        try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
+        return;
+      }
 
       const budget = calcularBudget({
-        rendaMensal: renda,
-        entrada,
-        fgts: fgtsFlag ? 0 : 0, // caso você some FGTS em 'entrada', mantém 0 aqui; ajuste se separar
-        idade,
+        rendaMensal: rendaNum,
+        entrada: entradaNum,
+        fgts: 0, // se você somar FGTS à entrada, mantenha 0 aqui
+        idade: idadeNum,
         prazoPreferidoMeses: 420,
         taxaMensal: Number(process.env.DEFAULT_TAXA_MENSAL || 0.010),
         comprometimentoMax: Number(process.env.DEFAULT_COMPROMETIMENTO || 0.30)
@@ -638,7 +645,6 @@ async function handleOpenAiCore(params: {
         budget.parcelaMax
       );
 
-      // guarda memória útil
       try {
         await ltm.upsert(companyId, contact.id, [
           { key: "orcamento_min", value: String(budget.faixaImovel.minimo), confidence: 0.9 },
@@ -649,58 +655,62 @@ async function handleOpenAiCore(params: {
       const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: resumo + "\n\n" + WappTmpl.agendamento() });
       try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
 
-      // Score do lead após resposta de financiamento
+      // score do lead
       try {
         const sc = scoreLead({
-          income: renda || null,
+          income: rendaNum,
           downPaymentPct: null,
-          hasFGTS: fgtsFlag,
+          hasFGTS: hasFGTS,
           moment: (mergedCriteria as any).momento || null,
           hasObjectiveCriteria: !!((mergedCriteria as any).tipo || (mergedCriteria as any).dormitorios),
           hasClearGeo: !!((mergedCriteria as any).bairro || (mergedCriteria as any).cidade),
           engagementFast: true
         });
-        let stage: string | null = null;
-        if (sc >= 80) stage = "A"; else if (sc >= 60) stage = "B"; else stage = "C";
+        const stage = sc >= 80 ? "A" : sc >= 60 ? "B" : "C";
         try { await ticket.update({ leadScore: sc, leadStage: stage }); } catch {}
         try { await ltm.upsert(companyId, contact.id, [{ key: "lead_score", value: String(sc), confidence: 0.9 }]); } catch {}
       } catch {}
 
-      // Puxa 2–3 imóveis aderentes à faixa
+      // se já temos local/tipo, buscar 2–3 opções na faixa
       try {
-        const chosen = await chooseIntegrationByTextCompat(companyId, text);
-        if (chosen) {
-          const searchRes = await callRunSearch({
-            companyId,
-            integrationId: chosen.id,
-            criteria: { ...mergedCriteria, precoMin: budget.faixaImovel.minimo, precoMax: budget.faixaImovel.maximo },
-            page: 1,
-            limit: 12,
-            sort: "relevance:desc",
-            locale: "pt-BR"
-          });
-          const nlCrit = toNLFilterCriteria({
-            ...mergedCriteria,
-            precoMin: budget.faixaImovel.minimo,
-            precoMax: budget.faixaImovel.maximo
-          } as any);
-          const ranked = NLFilter.filterAndRankItems(searchRes.items || [], nlCrit);
-          const pageItems = ranked.slice(0, 3);
-          if (pageItems.length) {
-            let rendered = defaultWhatsAppRenderer(pageItems, 3);
-            try {
-              const rmod = await safeImport("../../InventoryServices/Renderers/WhatsAppRenderer");
-              if (rmod?.renderWhatsAppList) rendered = rmod.renderWhatsAppList(pageItems, { maxItems: 3 });
-            } catch {}
-            await wbot.sendMessage(msg.key.remoteJid!, { text: rendered });
+        if (enoughForSearch(mergedCriteria)) {
+          const chosen = await chooseIntegrationByTextCompat(companyId, text);
+          if (chosen) {
+            const searchRes = await callRunSearch({
+              companyId,
+              integrationId: chosen.id,
+              criteria: { ...mergedCriteria, precoMin: budget.faixaImovel.minimo, precoMax: budget.faixaImovel.maximo },
+              page: 1,
+              limit: 12,
+              sort: "relevance:desc",
+              locale: "pt-BR"
+            });
+            const nlCrit = toNLFilterCriteria({
+              ...mergedCriteria,
+              precoMin: budget.faixaImovel.minimo,
+              precoMax: budget.faixaImovel.maximo
+            } as any);
+            const ranked = NLFilter.filterAndRankItems(searchRes.items || [], nlCrit);
+            const pageItems = ranked.slice(0, 3);
+            if (pageItems.length) {
+              let rendered = defaultWhatsAppRenderer(pageItems, 3);
+              try { const rmod = await safeImport("../../InventoryServices/Renderers/WhatsAppRenderer");
+                if (rmod?.renderWhatsAppList) rendered = rmod.renderWhatsAppList(pageItems, { maxItems: 3 }); } catch {}
+              await wbot.sendMessage(msg.key.remoteJid!, { text: rendered });
+            }
           }
+        } else {
+          // Senão, pedir local + tipo em 1 mensagem
+          await wbot.sendMessage(msg.key.remoteJid!, {
+            text: "Show! Agora me diz *bairro/cidade* e *casa/apto + nº de dormitórios* pra eu te mostrar 2–3 opções nessa faixa 😉"
+          });
         }
       } catch {}
 
       return;
     }
 
-    // ===== FLUXO “VENDER IMÓVEL” =====
+    // ===== VENDER =====
     if (detectSellerIntent(text)) {
       const reply = [
         "Perfeito! 🙌 Para avaliação ágil, me diga:",
@@ -714,35 +724,34 @@ async function handleOpenAiCore(params: {
       const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: reply });
       try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
 
-      // Score mínimo (vendedor costuma receber handoff rápido)
       try {
         const sc = scoreLead({
-          income: null,
-          downPaymentPct: null,
-          hasFGTS: null,
-          moment: "1-3m",
-          hasObjectiveCriteria: true,
-          hasClearGeo: true,
-          engagementFast: true
+          income: null, downPaymentPct: null, hasFGTS: null,
+          moment: "1-3m", hasObjectiveCriteria: true, hasClearGeo: true, engagementFast: true
         });
-        let stage: string | null = (sc >= 80 ? "A" : sc >= 60 ? "B" : "C");
+        const stage = sc >= 80 ? "A" : sc >= 60 ? "B" : "C";
         try { await ticket.update({ leadScore: sc, leadStage: stage }); } catch {}
         try { await ltm.upsert(companyId, contact.id, [{ key: "lead_score", value: String(sc), confidence: 0.8 }]); } catch {}
       } catch {}
-
       return;
     }
 
     // ===== SMALLTALK / Q&A =====
     if (plan.intent !== "browse_inventory") {
-      const messages: { role: "system" | "user" | "assistant"; content: string }[] = [];
+      // TIPAGEM CORRETA para corrigir TS2769
+      const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
       messages.push({ role: "system", content: systemPrompt });
 
       const lgpd = askLGPDOnce(convoState);
       if (lgpd) messages.push({ role: "system", content: `Mensagem obrigatória: ${lgpd}` });
 
       if (memoryContext) messages.push({ role: "system", content: memoryContext });
-      if (convoState?.history?.length) messages.push(...(convoState.history as any[]));
+      if (convoState?.history?.length) {
+        for (const h of (convoState.history as any[])) {
+          const r = (h?.role === "user" || h?.role === "assistant" || h?.role === "system") ? h.role : "user";
+          messages.push({ role: r as any, content: String(h?.content || "") });
+        }
+      }
 
       const chat = await client.chat.completions.create({
         model,
@@ -751,30 +760,26 @@ async function handleOpenAiCore(params: {
         messages: [...messages, { role: "user", content: maskPII(text) }]
       });
 
-      let answer = chat.choices?.[0]?.message?.content?.trim();
+      let answer = chat.choices?.[0]?.message?.content?.trim() || "";
 
-      // Pergunta focada (no máx. 2 slots) se necessário
-      if (!answer || /qual bairro|qual tipo|está procurando\?/i.test(answer)) {
-        const miss = missingSlot(mergedCriteria);
-        if (miss === "local") answer = "Perfeito! Me diga a *cidade ou bairro* de preferência 😉";
-        else if (miss === "tipo_ou_dormitorios") answer = "Ótimo! Prefere *casa, apartamento ou studio*? E quantos *dormitórios*?";
-        else if (miss === "preco") answer = "Tem uma *faixa de preço* em mente? Posso te sugerir ótimas opções dentro do seu orçamento.";
+      // Guardrail: não permitir "vou buscar e retorno"
+      answer = answer.replace(/(vou|irei)\s+(procurar|buscar).{0,40}(retorn|voltar|te aviso)[^.!\n]*[.!]?/gi, "")
+                     .replace(/\n{3,}/g, "\n\n")
+                     .trim();
+
+      // Pergunta focada (no máx. 2 slots)
+      const miss = missingSlot(mergedCriteria);
+      if (miss === "local") {
+        answer = "Perfeito! Me diga a *cidade ou bairro* de preferência 😉";
+      } else if (miss === "tipo_ou_dormitorios") {
+        answer = "Ótimo! Prefere *casa, apartamento ou studio*? E quantos *dormitórios*?";
+      } else if (!answer) {
+        answer = "Me dá só mais um detalhe (bairro/cidade, tipo ou nº de dormitórios) e eu já te mostro 2–3 opções.";
       }
-
-      if (!answer) return;
 
       if (shouldTransferToHuman(answer)) {
-        await wbot.sendMessage(msg.key.remoteJid!, { text: "Vou transferir para um atendente humano para te ajudar melhor. 🙏" });
+        await wbot.sendMessage(msg.key.remoteJid!, { text: "Vou te passar com um especialista pra agilizar, combinado? 🙏" });
         return;
-      }
-
-      // anti-loop
-      const lastQ = convoState?.lastQuestion || "";
-      if (answer === lastQ) {
-        const miss = missingSlot(mergedCriteria);
-        if (miss === "tipo_ou_dormitorios") answer = "Beleza! Quantos *dormitórios* você precisa?";
-        else if (miss === "local") answer = "Show! Qual *bairro* (ou cidade) você prefere?";
-        else answer = "Me dá só mais um detalhe (bairro/cidade, tipo ou faixa de preço) que eu já te mando as melhores opções. 😉";
       }
 
       const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: answer });
@@ -803,7 +808,7 @@ async function handleOpenAiCore(params: {
     const chosen = await chooseIntegrationByTextCompat(companyId, text);
     const criteria = mergedCriteria;
 
-    // Agendamento direto
+    // se o usuário pediu visita direto
     if (segment === "imoveis" && detectVisitIntent(text)) {
       await VisitService.requestVisit({
         companyId,
@@ -812,12 +817,11 @@ async function handleOpenAiCore(params: {
         propertyRef: (convoState?.lastSearch?.items?.[0]?.codigo || null),
         notes: `Lead pediu visita via chat. Msg: "${text}".`
       });
-
       const reply = "Perfeito! 😊 Me envie *duas janelas de horário* (ex.: “sexta 15h ou sábado 10h”), que eu já valido e agendo pra você.";
       const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: reply });
       try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
 
-      // Score rápido após intenção clara de visita
+      // score rápido
       try {
         const sc = scoreLead({
           income: Number(String((criteria as any).renda || "").replace(/[^\d]/g, "")) || null,
@@ -828,14 +832,26 @@ async function handleOpenAiCore(params: {
           hasClearGeo: !!(criteria as any).bairro || !!(criteria as any).cidade,
           engagementFast: true
         });
-        let stage: string | null = (sc >= 80 ? "A" : sc >= 60 ? "B" : "C");
+        const stage = sc >= 80 ? "A" : sc >= 60 ? "B" : "C";
         try { await ticket.update({ leadScore: sc, leadStage: stage }); } catch {}
         try { await ltm.upsert(companyId, contact.id, [{ key: "lead_score", value: String(sc), confidence: 0.9 }]); } catch {}
       } catch {}
-
       return;
     }
 
+    // se ainda não tem slots mínimos, pergunte e NÃO finja buscar
+    if (!enoughForSearch(criteria)) {
+      const miss = missingSlot(criteria);
+      const ask =
+        miss === "local" ? "Pra te mandar opções certeiras: qual *bairro ou cidade* prefere? 🙂"
+        : miss === "tipo_ou_dormitorios" ? "Prefere *casa ou apartamento*? E quantos *dormitórios*?"
+        : "Tem uma *faixa de preço* em mente? (posso ajustar por renda/entrada também)";
+      const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: ask });
+      try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
+      return;
+    }
+
+    // buscar
     const searchRes = await callRunSearch({
       companyId,
       integrationId: chosen?.id,
@@ -846,7 +862,6 @@ async function handleOpenAiCore(params: {
       locale: "pt-BR"
     });
 
-    // HARD-FILTER + RANKING + paginação (mostra 3)
     const nlCrit = toNLFilterCriteria(criteria);
     const ranked = NLFilter.filterAndRankItems(searchRes.items || [], nlCrit);
     const pageItems = NLFilter.paginateRanked(ranked, 1, 3);
@@ -866,33 +881,12 @@ async function handleOpenAiCore(params: {
     });
 
     let renderedText: string | undefined;
-    if (segment === "imoveis") {
-      try {
-        const rmod = await safeImport("../../InventoryServices/Renderers/WhatsAppRenderer");
-        const renderFn =
-          rmod?.renderWhatsAppList ||
-          ((items: any[]) => defaultWhatsAppRenderer(items, 3));
-        renderedText = renderFn(pageItems, {
-          headerTitle: "🌟 Opções selecionadas",
-          categoryHint: "imóveis",
-          maxItems: 3,
-          showIndexEmojis: true
-        });
-      } catch {
-        renderedText = defaultWhatsAppRenderer(pageItems, 3);
-      }
-    }
-
-    if (!renderedText) {
-      if ((InventoryFormatter as any).formatInventoryReplyWithPrompt && systemPrompt) {
-        renderedText = (InventoryFormatter as any).formatInventoryReplyWithPrompt(
-          { items: pageItems, total: searchRes.total || ranked.length || 0, criteria }, systemPrompt);
-      } else if ((InventoryFormatter as any).formatInventoryReply) {
-        renderedText = (InventoryFormatter as any).formatInventoryReply(
-          { items: pageItems, total: searchRes.total || ranked.length || 0, criteria });
-      } else {
-        renderedText = JSON.stringify({ items: pageItems, total: searchRes.total || ranked.length || 0 }, null, 2);
-      }
+    try {
+      const rmod = await safeImport("../../InventoryServices/Renderers/WhatsAppRenderer");
+      const renderFn = rmod?.renderWhatsAppList || ((items: any[]) => defaultWhatsAppRenderer(items, 3));
+      renderedText = renderFn(pageItems, { headerTitle: "🌟 Opções selecionadas", categoryHint: "imóveis", maxItems: 3, showIndexEmojis: true });
+    } catch {
+      renderedText = defaultWhatsAppRenderer(pageItems, 3);
     }
 
     if (renderedText && process.env.POLISH_WITH_LLM === "true") {
@@ -900,7 +894,7 @@ async function handleOpenAiCore(params: {
     }
 
     const sent = await wbot.sendMessage(msg.key.remoteJid!, {
-      text: renderedText || "Não encontrei opções ideais ainda. Me dê mais detalhes?"
+      text: renderedText || "Não encontrei opções ideais ainda. Me dá mais detalhes?"
     });
     try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
 
@@ -909,7 +903,7 @@ async function handleOpenAiCore(params: {
       if (facts?.length) await ltm.upsert(companyId, contact?.id, facts);
     } catch {}
 
-    // >>> Score do lead após mostra de opções
+    // score após lista
     try {
       const sc = scoreLead({
         income: Number(String((criteria as any).renda || "").replace(/[^\d]/g, "")) || null,
@@ -920,11 +914,10 @@ async function handleOpenAiCore(params: {
         hasClearGeo: !!(criteria as any).bairro || !!(criteria as any).cidade,
         engagementFast: true
       });
-      let stage: string | null = (sc >= 80 ? "A" : sc >= 60 ? "B" : "C");
+      const stage = sc >= 80 ? "A" : sc >= 60 ? "B" : "C";
       try { await ticket.update({ leadScore: sc, leadStage: stage }); } catch {}
       try { await ltm.upsert(companyId, contact.id, [{ key: "lead_score", value: String(sc), confidence: 0.9 }]); } catch {}
     } catch {}
-    // <<< Score
 
     const newState: any = await loadState(ticket.id).catch(() => (convoState || {}));
     await saveState(ticket.id, {
@@ -937,6 +930,7 @@ async function handleOpenAiCore(params: {
       ].slice(-12)
     } as any);
     return;
+
   } catch (err: any) {
     logger.error({ ctx: "handleOpenAi", err: err?.message || err });
     try {
@@ -953,7 +947,7 @@ async function handleOpenAiCore(params: {
   }
 }
 
-/** exports */
+/** export */
 export const handleOpenAi = async (...args: any[]) => {
   const params = normalizeArgs(args);
   if (!params?.ticket) throw new Error("handleOpenAi: ticket indefinido na chamada");
