@@ -1,4 +1,5 @@
 // backend/src/services/WbotServices/listeners/handleOpenAi.ts
+
 import OpenAI from "openai";
 import * as Planner from "../../AI/Planner";
 import { loadState, saveState } from "../../InventoryServices/ConversationState";
@@ -17,9 +18,13 @@ import Company from "../../../models/Company";
 import Ticket from "../../../models/Ticket";
 import Whatsapp from "../../../models/Whatsapp";
 import Queue from "../../../models/Queue";
-// REMOVE o template fixo e passa a compor dinamicamente
-// import { REAL_ESTATE_SYSTEM_PROMPT } from "../../Agents/templates/realEstatePrompt";
 import VisitService from "../../Visits/VisitService";
+
+// >>> NOVOS IMPORTS
+import { calcularBudget } from "../../Finance/FinancingCalculator";
+import { T as WappTmpl } from "../../Agents/templates/whatsappTemplates";
+import { scoreLead } from "../../Leads/scoreLead";
+// <<< NOVOS IMPORTS
 
 /** -------------- Prompt dinâmico por segmento -------------- */
 async function safeImport(modulePath: string): Promise<any | null> {
@@ -71,7 +76,7 @@ function defaultWhatsAppRenderer(items: any[], maxItems = 3): string {
       area && `• ${String(area).replace(".", ",")} m²`,
       (dorm || vagas) && `• ${dorm ?? "?"} dorm · ${vagas ?? "?"} vaga(s)`,
       preco && `• ${String(preco).toString().startsWith("R$") ? preco : `R$ ${preco}`}`,
-      link && `• [Veja mais](${link})`
+      link && `• ${link}`
     ].filter(Boolean);
 
     return lines.join("\n");
@@ -220,6 +225,13 @@ type Criteria = {
   precoMin?: number | string; precoMax?: number | string;
   areaMin?: number | string; areaMax?: number | string;
   texto?: string;
+
+  // Campos “financeiros” opcionais (se teu parser já extrair)
+  renda?: number | string;
+  entrada?: number | string;
+  fgts?: boolean;
+  idade?: number | string;
+  momento?: "agora"|"1-3m"|"3-6m"|"pesquisando";
 };
 
 function normalizeCriteria(anyC: any): Criteria {
@@ -235,6 +247,14 @@ function normalizeCriteria(anyC: any): Criteria {
   c.areaMin = anyC.areaMin || anyC.area_min || anyC.areaMin;
   c.areaMax = anyC.areaMax || anyC.area_max || anyC.areaMax;
   c.texto = anyC.texto || anyC.text;
+
+  // extras
+  c.renda = anyC.renda || anyC.income;
+  c.entrada = anyC.entrada || anyC.downPayment;
+  c.fgts = anyC.fgts ?? undefined;
+  c.idade = anyC.idade || anyC.age;
+  c.momento = anyC.momento || anyC.moment;
+
   return c;
 }
 function mergeCriteria(a: Criteria, b: Criteria): Criteria {
@@ -248,7 +268,12 @@ function mergeCriteria(a: Criteria, b: Criteria): Criteria {
     precoMax: b.precoMax || a.precoMax,
     areaMin: b.areaMin || a.areaMin,
     areaMax: b.areaMax || a.areaMax,
-    texto: b.texto || a.texto
+    texto: b.texto || a.texto,
+    renda: b.renda || a.renda,
+    entrada: b.entrada || a.entrada,
+    fgts: typeof b.fgts === "boolean" ? b.fgts : a.fgts,
+    idade: b.idade || a.idade,
+    momento: b.momento || a.momento
   };
 }
 function enoughForSearch(c: Criteria): boolean {
@@ -302,6 +327,17 @@ function detectCode(text: string): string | null {
   const m = text.toLowerCase().match(/(c[oó]d(?:igo)?|ref(?:er[êe]ncia)?)\s*[:#]?\s*([a-z0-9\-]+)/i);
   return (m && m[2]) ? m[2] : null;
 }
+
+// >>> Detectores novos
+function detectFinanceIntent(text: string) {
+  const t = (text || "").toLowerCase();
+  return /(financi|simula|sac|price|fgts|mcmv|parcela|juros)/.test(t);
+}
+function detectSellerIntent(text: string) {
+  const t = (text || "").toLowerCase();
+  return /(vender|avaliar|anunciar|colocar à venda|colocar a venda|colocar a venda)/.test(t);
+}
+// <<< Detectores novos
 
 /** -------------- lead básico -------------- */
 async function maybeCaptureLead(text: string, contact: any) {
@@ -387,7 +423,7 @@ async function extractStructuredFacts(text: string, reply: string) {
   return facts;
 }
 
-/** -------------- núcleo -------------- */
+/** -------------- OpenAI client cache -------------- */
 const sessionsOpenAi: { id?: number; client: OpenAI }[] = [];
 const limiter = RateLimiter.forGlobal();
 
@@ -417,6 +453,7 @@ function toNLFilterCriteria(c: Criteria): NLFilter.Criteria {
   };
 }
 
+/** -------------- núcleo -------------- */
 async function handleOpenAiCore(params: {
   msg: proto.IWebMessageInfo;
   wbot: any;
@@ -476,8 +513,7 @@ async function handleOpenAiCore(params: {
     const longMem = await ltm.read(companyId, contact?.id);
 
     const memoryContext = longMem.length
-      ? `Memória do cliente: ${longMem.map(m => `${m.key}=${m.value}`).join(", ")}`
-      : "";
+      ? `Memória do cliente: ${longMem.map(m => `${m.key}=${m.value}`).join(", ")}` : "";
 
     // ===== Extrai e acumula critérios (slots) =====
     const parsedNow = await callParseCriteria(companyId, text, {});
@@ -578,6 +614,125 @@ async function handleOpenAiCore(params: {
       }
     }
 
+    // ===== FLUXO DE FINANCIAMENTO (SAC/PRICE + faixa estimada) =====
+    if (detectFinanceIntent(text)) {
+      const renda = Number(String((mergedCriteria as any).renda || "").replace(/[^\d]/g, "")) || 0;
+      const entrada = Number(String((mergedCriteria as any).entrada || "").replace(/[^\d]/g, "")) || 0;
+      const fgtsFlag = !!(mergedCriteria as any).fgts;
+      const idade = Number(String((mergedCriteria as any).idade || "").replace(/[^\d]/g, "")) || undefined;
+
+      const budget = calcularBudget({
+        rendaMensal: renda,
+        entrada,
+        fgts: fgtsFlag ? 0 : 0, // caso você some FGTS em 'entrada', mantém 0 aqui; ajuste se separar
+        idade,
+        prazoPreferidoMeses: 420,
+        taxaMensal: Number(process.env.DEFAULT_TAXA_MENSAL || 0.010),
+        comprometimentoMax: Number(process.env.DEFAULT_COMPROMETIMENTO || 0.30)
+      });
+
+      const resumo = WappTmpl.financiamentoResumo(
+        budget.faixaImovel.minimo,
+        budget.faixaImovel.maximo,
+        budget.prazoMeses,
+        budget.parcelaMax
+      );
+
+      // guarda memória útil
+      try {
+        await ltm.upsert(companyId, contact.id, [
+          { key: "orcamento_min", value: String(budget.faixaImovel.minimo), confidence: 0.9 },
+          { key: "orcamento_max", value: String(budget.faixaImovel.maximo), confidence: 0.9 }
+        ]);
+      } catch {}
+
+      const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: resumo + "\n\n" + WappTmpl.agendamento() });
+      try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
+
+      // Score do lead após resposta de financiamento
+      try {
+        const sc = scoreLead({
+          income: renda || null,
+          downPaymentPct: null,
+          hasFGTS: fgtsFlag,
+          moment: (mergedCriteria as any).momento || null,
+          hasObjectiveCriteria: !!((mergedCriteria as any).tipo || (mergedCriteria as any).dormitorios),
+          hasClearGeo: !!((mergedCriteria as any).bairro || (mergedCriteria as any).cidade),
+          engagementFast: true
+        });
+        let stage: string | null = null;
+        if (sc >= 80) stage = "A"; else if (sc >= 60) stage = "B"; else stage = "C";
+        try { await ticket.update({ leadScore: sc, leadStage: stage }); } catch {}
+        try { await ltm.upsert(companyId, contact.id, [{ key: "lead_score", value: String(sc), confidence: 0.9 }]); } catch {}
+      } catch {}
+
+      // Puxa 2–3 imóveis aderentes à faixa
+      try {
+        const chosen = await chooseIntegrationByTextCompat(companyId, text);
+        if (chosen) {
+          const searchRes = await callRunSearch({
+            companyId,
+            integrationId: chosen.id,
+            criteria: { ...mergedCriteria, precoMin: budget.faixaImovel.minimo, precoMax: budget.faixaImovel.maximo },
+            page: 1,
+            limit: 12,
+            sort: "relevance:desc",
+            locale: "pt-BR"
+          });
+          const nlCrit = toNLFilterCriteria({
+            ...mergedCriteria,
+            precoMin: budget.faixaImovel.minimo,
+            precoMax: budget.faixaImovel.maximo
+          } as any);
+          const ranked = NLFilter.filterAndRankItems(searchRes.items || [], nlCrit);
+          const pageItems = ranked.slice(0, 3);
+          if (pageItems.length) {
+            let rendered = defaultWhatsAppRenderer(pageItems, 3);
+            try {
+              const rmod = await safeImport("../../InventoryServices/Renderers/WhatsAppRenderer");
+              if (rmod?.renderWhatsAppList) rendered = rmod.renderWhatsAppList(pageItems, { maxItems: 3 });
+            } catch {}
+            await wbot.sendMessage(msg.key.remoteJid!, { text: rendered });
+          }
+        }
+      } catch {}
+
+      return;
+    }
+
+    // ===== FLUXO “VENDER IMÓVEL” =====
+    if (detectSellerIntent(text)) {
+      const reply = [
+        "Perfeito! 🙌 Para avaliação ágil, me diga:",
+        "• Endereço/bairro do imóvel",
+        "• Tipologia (apto/casa) e metragem aproximada",
+        "• Estado (novo, reformado, precisa reforma)",
+        "Se tiver, me envie *matrícula* e *IPTU* (pode ser foto legível).",
+        "",
+        "Posso já *agendar uma visita técnica* para avaliação? Tenho quarta 18h ou sábado 10h."
+      ].join("\n");
+      const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: reply });
+      try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
+
+      // Score mínimo (vendedor costuma receber handoff rápido)
+      try {
+        const sc = scoreLead({
+          income: null,
+          downPaymentPct: null,
+          hasFGTS: null,
+          moment: "1-3m",
+          hasObjectiveCriteria: true,
+          hasClearGeo: true,
+          engagementFast: true
+        });
+        let stage: string | null = (sc >= 80 ? "A" : sc >= 60 ? "B" : "C");
+        try { await ticket.update({ leadScore: sc, leadStage: stage }); } catch {}
+        try { await ltm.upsert(companyId, contact.id, [{ key: "lead_score", value: String(sc), confidence: 0.8 }]); } catch {}
+      } catch {}
+
+      return;
+    }
+
     // ===== SMALLTALK / Q&A =====
     if (plan.intent !== "browse_inventory") {
       const messages: { role: "system" | "user" | "assistant"; content: string }[] = [];
@@ -661,6 +816,23 @@ async function handleOpenAiCore(params: {
       const reply = "Perfeito! 😊 Me envie *duas janelas de horário* (ex.: “sexta 15h ou sábado 10h”), que eu já valido e agendo pra você.";
       const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: reply });
       try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
+
+      // Score rápido após intenção clara de visita
+      try {
+        const sc = scoreLead({
+          income: Number(String((criteria as any).renda || "").replace(/[^\d]/g, "")) || null,
+          downPaymentPct: null,
+          hasFGTS: !!(criteria as any).fgts,
+          moment: "agora",
+          hasObjectiveCriteria: !!(criteria as any).tipo || !!(criteria as any).dormitorios,
+          hasClearGeo: !!(criteria as any).bairro || !!(criteria as any).cidade,
+          engagementFast: true
+        });
+        let stage: string | null = (sc >= 80 ? "A" : sc >= 60 ? "B" : "C");
+        try { await ticket.update({ leadScore: sc, leadStage: stage }); } catch {}
+        try { await ltm.upsert(companyId, contact.id, [{ key: "lead_score", value: String(sc), confidence: 0.9 }]); } catch {}
+      } catch {}
+
       return;
     }
 
@@ -736,6 +908,23 @@ async function handleOpenAiCore(params: {
       const facts = await extractStructuredFacts(text, renderedText || "");
       if (facts?.length) await ltm.upsert(companyId, contact?.id, facts);
     } catch {}
+
+    // >>> Score do lead após mostra de opções
+    try {
+      const sc = scoreLead({
+        income: Number(String((criteria as any).renda || "").replace(/[^\d]/g, "")) || null,
+        downPaymentPct: null,
+        hasFGTS: !!(criteria as any).fgts,
+        moment: (criteria as any).momento || null,
+        hasObjectiveCriteria: !!(criteria as any).tipo || !!(criteria as any).dormitorios,
+        hasClearGeo: !!(criteria as any).bairro || !!(criteria as any).cidade,
+        engagementFast: true
+      });
+      let stage: string | null = (sc >= 80 ? "A" : sc >= 60 ? "B" : "C");
+      try { await ticket.update({ leadScore: sc, leadStage: stage }); } catch {}
+      try { await ltm.upsert(companyId, contact.id, [{ key: "lead_score", value: String(sc), confidence: 0.9 }]); } catch {}
+    } catch {}
+    // <<< Score
 
     const newState: any = await loadState(ticket.id).catch(() => (convoState || {}));
     await saveState(ticket.id, {

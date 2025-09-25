@@ -1,197 +1,220 @@
 import OpenAI from "openai";
 
 /**
- * Planner LLM-first com cache e “short-circuit” opcional para saudações.
+ * Planner LLM-first com cache e “short-circuit” para saudações.
+ * Intenções cobertas:
+ *  - "comprar" (browse_inventory)
+ *  - "vender"
+ *  - "financiamento"
+ *  - "agendar_visita"
+ *  - "duvida_geral"
+ *  - "smalltalk"
+ *  - "handoff"
  *
  * ENV:
- *   OPENAI_API_KEY                (obrigatório)
- *   OPENAI_MODEL                  (fallback gpt-4o-mini)
- *   AI_PLANNER_MODEL              (modelo só para classificar, ex: gpt-4o-mini)
- *   AI_PLANNER_MAX_TOKENS=320
+ *   OPENAI_API_KEY (obrigatório)
+ *   AI_PLANNER_MODEL (ex: gpt-4o-mini)
  *   AI_PLANNER_TEMPERATURE=0
- *   AI_PLANNER_GREETING_FAST=true     // não chama LLM para “oi/olá…”
+ *   AI_PLANNER_MAX_TOKENS=320
+ *   AI_PLANNER_GREETING_FAST=true
  *   AI_PLANNER_MIN_CONF=0.6
  */
 
 type PlanInput = {
   text: string;
-  last_state?: Record<string, any>;
-  model?: string;
-  systemPrompt?: string;   // persona do cadastro
+  persona?: string;
+  memory?: Record<string, any>;
 };
 
-export type PlanOutput = {
-  intent: "smalltalk" | "browse_inventory" | "handoff" | "other";
-  confidence: number;      // 0..1
+type PlanSlots = {
+  // Geo
+  cidade?: string;
+  bairro?: string;
+  estado?: string;
+
+  // Imóvel
+  tipo?: string;            // apartamento|casa|studio…
+  dormitorios?: number;
+  vagas?: number;
+  suite?: number;
+  areaMin?: number;
+  areaMax?: number;
+  novoUsado?: "novo" | "usado" | "indiferente";
+  andar?: number;
+  pet?: boolean;
+
+  // Financeiro
+  renda?: number;           // renda bruta familiar (R$)
+  entrada?: number;         // valor absoluto
+  fgts?: boolean;
+  momento?: "agora" | "1-3m" | "3-6m" | "pesquisando";
+  precoMin?: number;
+  precoMax?: number;
+
+  // Contato
+  nome?: string;
+  email?: string;
+  whatsapp?: string;
+  melhorHorario?: string;
+
+  // Preferências
+  elevador?: boolean;
+  varanda?: boolean;
+  lazer?: boolean;
+  vagaCoberta?: boolean;
+
+  // Vendedor
+  imovelEndereco?: string;
+  estadoConservacao?: string; // novo, reformado, precisa reforma
+};
+
+type PlanOutput = {
+  intent:
+    | "comprar"
+    | "vender"
+    | "financiamento"
+    | "agendar_visita"
+    | "duvida_geral"
+    | "smalltalk"
+    | "handoff";
+  confidence: number;
   query_ready: boolean;
-  slots: {
-    tipo?: string;
-    cidade?: string;
-    bairro?: string;
-    precoMin?: number;
-    precoMax?: number;
-    quartos?: number;
-    [k: string]: any;
-  };
+  slots: PlanSlots;
   missing_slots: string[];
   followups: string[];
 };
 
-// ---------- cache em memória com TTL ----------
-const LRU: Map<string, { exp: number; value: PlanOutput }> = new Map();
-const TTL_MS = 5 * 60 * 1000; // 5 min
-
-function cacheGet(key: string): PlanOutput | null {
-  const hit = LRU.get(key);
-  if (!hit) return null;
-  if (Date.now() > hit.exp) { LRU.delete(key); return null; }
-  return hit.value;
-}
-function cacheSet(key: string, value: PlanOutput) {
-  LRU.set(key, { exp: Date.now() + TTL_MS, value });
-  // contenção simples
-  if (LRU.size > 5000) {
-    const first = LRU.keys().next().value;
-    if (first) LRU.delete(first);
-  }
-}
-
 const GREET_RE = /(^|\s)(oi|ol[aá]|e[ai]|bom dia|boa tarde|boa noite)(!|\.|,|\s|$)/i;
 
-function normalizeText(t: string) {
-  return (t || "").trim().replace(/\s+/g, " ").toLowerCase();
+// LRU simples
+const LRU: Map<string, { exp: number; value: PlanOutput }> = new Map();
+const TTL_MS = 5 * 60 * 1000;
+function cacheGet(k: string) {
+  const hit = LRU.get(k);
+  if (!hit) return null;
+  if (Date.now() > hit.exp) {
+    LRU.delete(k);
+    return null;
+  }
+  return hit.value;
+}
+function cacheSet(k: string, v: PlanOutput) {
+  LRU.set(k, { exp: Date.now() + TTL_MS, value: v });
+  if (LRU.size > 3000) LRU.delete(LRU.keys().next().value as string);
 }
 
-function fewShots(): string {
-  // exemplos curtos que ensinam o formato/limites
+function fewShots() {
   return [
-    `Exemplo 1:
-Usuário: "oi, tudo bem?"
+`Exemplo A (comprar):
+Usuário: "Quero apê 2 dorm no Kobrasol, até 420 mil, tenho FGTS, mudo em 2 meses."
 JSON:
-{"intent":"smalltalk","confidence":0.95,"query_ready":false,"slots":{},"missing_slots":[],"followups":["Como posso ajudar?"]}`,
+{"intent":"comprar","confidence":0.9,"query_ready":true,
+ "slots":{"tipo":"apartamento","dormitorios":2,"bairro":"Kobrasol","cidade":"São José","fgts":true,"precoMax":420000,"momento":"1-3m"},
+ "missing_slots":[],"followups":[]}`,
 
-    `Exemplo 2:
-Usuário: "quero um apartamento 2 quartos no centro até 500k"
+`Exemplo B (financiamento):
+Usuário: "Dá pra simular PRICE com renda 8 mil e FGTS 30k?"
 JSON:
-{"intent":"browse_inventory","confidence":0.92,"query_ready":true,"slots":{"tipo":"apartamento","quartos":2,"bairro":"centro","precoMax":500000},"missing_slots":[],"followups":[]}`,
+{"intent":"financiamento","confidence":0.9,"query_ready":true,
+ "slots":{"renda":8000,"fgts":true,"entrada":30000},
+ "missing_slots":[],"followups":["Prefere prazo 360 ou 420 meses?"]}`,
 
-    `Exemplo 3:
-Usuário: "me transfere para humano por favor"
+`Exemplo C (vender):
+Usuário: "Quero vender meu apê no Campinas; está reformado."
 JSON:
-{"intent":"handoff","confidence":0.9,"query_ready":false,"slots":{},"missing_slots":[],"followups":[]}`,
+{"intent":"vender","confidence":0.9,"query_ready":true,
+ "slots":{"imovelEndereco":"Campinas, São José/SC","estadoConservacao":"reformado","tipo":"apartamento"},
+ "missing_slots":["metragem","vaga"],"followups":["Pode me enviar matrícula e IPTU?"]}`,
 
-    `Exemplo 4:
-Usuário: "procurando opções, mas não sei região ainda"
+`Exemplo D (agendar):
+Usuário: "Consigo visitar sábado às 10h?"
 JSON:
-{"intent":"browse_inventory","confidence":0.75,"query_ready":false,"slots":{},"missing_slots":["regiao_ou_bairro"],"followups":["Pode me dizer a região/bairro e a faixa de preço?"]}`
+{"intent":"agendar_visita","confidence":0.9,"query_ready":true,
+ "slots":{},"missing_slots":[],"followups":[]}`,
+
+`Exemplo E (duvida geral):
+Usuário: "Pode pet no condomínio?"
+JSON:
+{"intent":"duvida_geral","confidence":0.7,"query_ready":false,
+ "slots":{},"missing_slots":["imóvel_alvo"],"followups":["Você tem um código/bairro pra eu conferir?"]}`
   ].join("\n\n");
 }
 
-export async function plan({ text, last_state, model, systemPrompt }: PlanInput): Promise<PlanOutput> {
-  const raw = String(text || "");
-  const t = normalizeText(raw);
+function normalizeText(t: string) {
+  return (t || "").trim().replace(/\s+/g, " ");
+}
 
-  // 1) atalho barato para saudações, se habilitado
-  if ((process.env.AI_PLANNER_GREETING_FAST || "true").toLowerCase() === "true" && GREET_RE.test(t)) {
+export async function plan({ text, persona }: PlanInput): Promise<PlanOutput> {
+  const raw = normalizeText(text);
+
+  // Saudações rápidas (não gasta token)
+  if (process.env.AI_PLANNER_GREETING_FAST === "true" && GREET_RE.test(raw)) {
     return {
       intent: "smalltalk",
-      confidence: 0.95,
+      confidence: 0.7,
       query_ready: false,
       slots: {},
       missing_slots: [],
-      followups: ["Como posso ajudar?"]
+      followups: ["Me diz bairro de interesse e faixa de preço que já te mostro as melhores opções 😉"]
     };
   }
 
-  // 2) cache
-  const cacheKey = `plan:v2:${t}`;
-  const cached = cacheGet(cacheKey);
-  if (cached) return cached;
+  const cacheKey = raw.slice(0, 200).toLowerCase();
+  const hit = cacheGet(cacheKey);
+  if (hit) return hit;
 
-  // 3) chamada LLM
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    // fallback quando chave não está presente
-    const fallback: PlanOutput = {
-      intent: "smalltalk",
-      confidence: 0.5,
-      query_ready: false,
-      slots: {},
-      missing_slots: [],
-      followups: []
-    };
-    return fallback;
-  }
-
-  const client = new OpenAI({ apiKey });
-  const clfModel = process.env.AI_PLANNER_MODEL || process.env.OPENAI_MODEL || model || "gpt-4o-mini";
-  const maxTokens = Number(process.env.AI_PLANNER_MAX_TOKENS || "320");
-  const temperature = Number(process.env.AI_PLANNER_TEMPERATURE || "0");
-  const minConf = Number(process.env.AI_PLANNER_MIN_CONF || "0.6");
-
-  const persona = (systemPrompt || "").trim();
+  const apiKey = process.env.OPENAI_API_KEY!;
+  const model = process.env.AI_PLANNER_MODEL || "gpt-4o-mini";
+  const maxTokens = Number(process.env.AI_PLANNER_MAX_TOKENS ?? 320);
+  const temperature = Number(process.env.AI_PLANNER_TEMPERATURE ?? 0);
 
   const system = [
     persona ? `${persona}\n` : "",
-    `Você é um **roteador de intenções** e extrator de critérios em pt-BR.
-Tarefas:
-1) Determine "intent" ∈ {"smalltalk","browse_inventory","handoff","other"}.
-2) Preencha "slots" quando pertinente (tipo, cidade, bairro, precoMin, precoMax, quartos).
-3) "query_ready": true quando já dá para consultar a API; senão, liste "missing_slots" e "followups" claros.
-4) Responda **apenas** com JSON válido, sem texto extra.
+    `Você é um roteador de intenções e extrator de slots para atendimento imobiliário (pt-BR).
+Responda APENAS com um JSON válido nesse formato:
+{
+  "intent": "comprar|vender|financiamento|agendar_visita|duvida_geral|smalltalk|handoff",
+  "confidence": 0..1,
+  "query_ready": boolean,
+  "slots": { ... },
+  "missing_slots": ["..."],
+  "followups": ["..."]
+}
 
-${fewShots()}
-`
+- slots aceitos: cidade,bairro,estado,tipo,dormitorios,vagas,suite,areaMin,areaMax,novoUsado,andar,pet,
+                 renda,entrada,fgts,momento,precoMin,precoMax,nome,email,whatsapp,melhorHorario,
+                 elevador,varanda,lazer,vagaCoberta,imovelEndereco,estadoConservacao
+- "query_ready" = true quando já dá para consultar inventário OU executar simulação OU agendar.
+- retorne followups curtos (no máx. 2!) se faltar algo essencial.
+${fewShots()}`
   ].join("\n");
 
-  const user = `Mensagem do usuário: """${raw}"""`;
-
+  const client = new OpenAI({ apiKey });
   const resp = await client.chat.completions.create({
-    model: clfModel,
+    model,
     temperature,
     max_tokens: maxTokens,
     response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: user }
-    ]
+    messages: [{ role: "system", content: system }, { role: "user", content: `Mensagem: """${raw}"""` }]
   });
 
-  const content = resp.choices?.[0]?.message?.content?.trim() || "{}";
   let out: PlanOutput;
-
   try {
-    const parsed = JSON.parse(content);
-    out = {
-      intent: parsed.intent || "other",
-      confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0.6,
-      query_ready: !!parsed.query_ready,
-      slots: parsed.slots || {},
-      missing_slots: Array.isArray(parsed.missing_slots) ? parsed.missing_slots : [],
-      followups: Array.isArray(parsed.followups) ? parsed.followups : []
-    };
+    const content = resp.choices?.[0]?.message?.content?.trim() || "{}";
+    out = JSON.parse(content) as PlanOutput;
   } catch {
-    // fallback bem conservador
     out = {
-      intent: "smalltalk",
-      confidence: 0.55,
-      query_ready: false,
-      slots: {},
-      missing_slots: [],
-      followups: []
-    };
-  }
-
-  // conservador: se confiança baixa, degrade para smalltalk
-  if (out.confidence < minConf && out.intent === "browse_inventory") {
-    out = {
-      intent: "smalltalk",
+      intent: "duvida_geral",
       confidence: 0.6,
       query_ready: false,
       slots: {},
       missing_slots: [],
-      followups: ["Me conte um pouco mais pra eu entender melhor 🙂"]
+      followups: ["Pode me dar mais detalhes, por favor?"]
     };
+  }
+
+  if (Number(out.confidence || 0) < Number(process.env.AI_PLANNER_MIN_CONF ?? 0.6)) {
+    out.intent = "duvida_geral";
   }
 
   cacheSet(cacheKey, out);

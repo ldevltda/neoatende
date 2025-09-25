@@ -1,20 +1,18 @@
 export function scoreLead(s: {
   income?: number | null;
-  downPayment?: number | null;
-  usesFGTS?: boolean | null;
+  downPaymentPct?: number | null; // % da entrada sobre o ticket alvo (quando souber)
+  hasFGTS?: boolean | null;
   moment?: "agora"|"1-3m"|"3-6m"|"pesquisando"|null;
-  city?: string | null;
-  neighborhood?: string | null;
-  type?: string | null;
-  bedrooms?: number | null;
+  hasObjectiveCriteria?: boolean | null; // tipo, dorms, etc.
+  hasClearGeo?: boolean | null;          // cidade/bairro definidos
+  engagementFast?: boolean | null;       // respondeu rápido
 }): number {
-  let score = 0;
-  if (s.income) score += 30;
-  if ((s.downPayment && s.downPayment >= 0.1) || s.usesFGTS) score += 25; // heurística
-  if (s.moment === "agora" || s.moment === "1-3m") score += 20;
-  const objetivos = [s.type, s.bedrooms != null ? "bed" : null].filter(Boolean).length;
-  if (objetivos) score += 10;
-  if (s.neighborhood || s.city) score += 10;
-  // engajamento pode somar +5 em outro ponto (tempo-resposta)
-  return Math.min(100, score);
+  let sc = 0;
+  if (s.income) sc += 30;
+  if ((s.downPaymentPct != null && s.downPaymentPct >= 0.10) || s.hasFGTS) sc += 25;
+  if (s.moment === "agora" || s.moment === "1-3m") sc += 20;
+  if (s.hasObjectiveCriteria) sc += 10;
+  if (s.hasClearGeo) sc += 10;
+  if (s.engagementFast) sc += 5;
+  return Math.max(0, Math.min(100, sc));
 }
