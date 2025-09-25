@@ -17,10 +17,11 @@ import Company from "../../../models/Company";
 import Ticket from "../../../models/Ticket";
 import Whatsapp from "../../../models/Whatsapp";
 import Queue from "../../../models/Queue";
-import { REAL_ESTATE_SYSTEM_PROMPT } from "../../Agents/templates/realEstatePrompt";
+// REMOVE o template fixo e passa a compor dinamicamente
+// import { REAL_ESTATE_SYSTEM_PROMPT } from "../../Agents/templates/realEstatePrompt";
 import VisitService from "../../Visits/VisitService";
 
-/** ---------- import dinâmico seguro ---------- */
+/** -------------- Prompt dinâmico por segmento -------------- */
 async function safeImport(modulePath: string): Promise<any | null> {
   try {
     // @ts-ignore
@@ -31,48 +32,66 @@ async function safeImport(modulePath: string): Promise<any | null> {
   }
 }
 
-/** ---------- renderers fallback ---------- */
+// Usa o compositor (prioriza prompt do painel + guardrails por segmento)
+async function composeSystemPrompt(companyId: number, userPromptFromDB?: string) {
+  try {
+    const mod = await safeImport("../../Prompt/composeSystemPrompt");
+    if (mod?.composeSystemPrompt) {
+      return await mod.composeSystemPrompt({ companyId, userPromptFromDB });
+    }
+  } catch {}
+  // fallback mínimo
+  const company = await Company.findByPk(companyId);
+  const nomeEmpresa = company?.name || "sua empresa";
+  const base = (userPromptFromDB || "").trim() || `Você é consultor(a) humano(a) da ${nomeEmpresa}.`;
+  const guardrails = `Tom: claro, caloroso, direto, sem jargões. Fale em 1ª pessoa.
+Nunca prometa aprovação de crédito. Pergunte no MÁXIMO 2 coisas por mensagem.
+Se o pedido fugir do escopo jurídico/contábil, explique limites e direcione.`;
+  return [base, guardrails].join("\n\n");
+}
+
+/** -------------- renderers fallback -------------- */
 function defaultWhatsAppRenderer(items: any[], maxItems = 3): string {
   if (!Array.isArray(items) || items.length === 0) {
     return "Não encontrei opções com esses critérios agora. Quer ajustar bairro, faixa de preço ou número de quartos para te mostrar alternativas?";
   }
   const take = items.slice(0, maxItems).map((p: any, i: number) => {
-    const title = p.title || p.titulo || p.name || p.nome || `Imóvel ${i + 1}`;
-    const bairro = p.bairro || p.neighborhood || "";
-    const cidade = p.cidade || p.city || "";
-    const area = p.area || p.area_m2 || p.m2 || p.areaUtil || undefined;
-    const dorm = p.dormitorios || p.quartos || p.bedrooms || undefined;
-    const vagas = p.vagas || p.garagens || p.parking || undefined;
-    const preco = p.price || p.preco || p.valor || undefined;
-    const link = p.url || p.link || p.permalink || "";
+    const title = p.TituloSite || p.Titulo || p.title || p.titulo || p.name || p.nome || `Imóvel ${i + 1}`;
+    const bairro = p.Bairro || p.bairro || p.neighborhood || p.location?.neighborhood || "";
+    const cidade = p.Cidade || p.cidade || p.city || p.location?.city || "";
+    const area = p.AreaPrivativa || p.area || p.area_m2 || p.m2 || p.areaUtil || undefined;
+    const dorm = p.Dormitorios || p.Dormitórios || p.dormitorios || p.quartos || p.bedrooms || undefined;
+    const vagas = p.Vagas || p.VagasGaragem || p.vagas || p.garagens || p.parking || undefined;
+    const preco = p.ValorVenda || p.Preco || p.Preço || p.price || p.preco || p.valor || undefined;
+    const link = p.url || p.link || p.permalink || p.slug || "";
 
     const lines = [
       `*${i + 1}) ${title}*`,
       (bairro || cidade) && `• ${[bairro, cidade].filter(Boolean).join(" / ")}`,
       area && `• ${String(area).replace(".", ",")} m²`,
       (dorm || vagas) && `• ${dorm ?? "?"} dorm · ${vagas ?? "?"} vaga(s)`,
-      preco && `• ${preco}`,
-      link && `• ${link}`
+      preco && `• ${String(preco).toString().startsWith("R$") ? preco : `R$ ${preco}`}`,
+      link && `• [Veja mais](${link})`
     ].filter(Boolean);
 
     return lines.join("\n");
   });
 
-  return `${take.join("\n\n")}\n\n👉 Quer ver por dentro? Agendo sua visita agora.`;
+  return `🌟 *Opções selecionadas para você!*\n\n${take.join("\n\n")}\n\n👉 Quer ver por dentro? Agendo sua visita agora.`;
 }
 
 function defaultWhatsAppDetails(item: any): string {
   if (!item) return "Não encontrei esse imóvel. Quer tentar outro código ou me dar mais detalhes?";
-  const title = item.title || item.titulo || item.name || "Imóvel";
-  const bairro = item.bairro || item.neighborhood || "";
-  const cidade = item.cidade || item.city || "";
-  const area = item.area || item.area_m2 || item.m2 || item.areaUtil;
-  const dorm = item.dormitorios || item.quartos || item.bedrooms;
-  const vagas = item.vagas || item.garagens || item.parking;
-  const banh = item.banheiros || item.bathrooms;
-  const preco = item.price || item.preco || item.valor;
-  const link = item.url || item.link || item.permalink || "";
-  const desc = item.description || item.descricao || "";
+  const title = item.TituloSite || item.Titulo || item.title || item.titulo || item.name || "Imóvel";
+  const bairro = item.Bairro || item.bairro || item.neighborhood || item.location?.neighborhood || "";
+  const cidade = item.Cidade || item.cidade || item.city || item.location?.city || "";
+  const area = item.AreaPrivativa || item.area || item.area_m2 || item.m2 || item.areaUtil;
+  const dorm = item.Dormitorios || item.Dormitórios || item.dormitorios || item.quartos || item.bedrooms;
+  const vagas = item.Vagas || item.VagasGaragem || item.vagas || item.garagens || item.parking;
+  const banh = item.Banheiros || item.banheiros || item.bathrooms;
+  const preco = item.ValorVenda || item.Preco || item.Preço || item.price || item.preco || item.valor;
+  const link = item.url || item.link || item.permalink || item.slug || "";
+  const desc = item.description || item.descricao || item.Descricao || "";
 
   const parts = [
     `*${title}*`,
@@ -80,7 +99,7 @@ function defaultWhatsAppDetails(item: any): string {
     area && `Área: ${String(area).replace(".", ",")} m²`,
     (dorm || vagas) && `Dorms/Vagas: ${dorm ?? "?"}/${vagas ?? "?"}`,
     banh && `Banheiros: ${banh}`,
-    preco && `Preço: ${preco}`,
+    preco && `Preço: ${String(preco).toString().startsWith("R$") ? preco : `R$ ${preco}`}`,
     desc && `—\n${desc}`,
     link && `🔗 ${link}`,
   ].filter(Boolean);
@@ -88,7 +107,7 @@ function defaultWhatsAppDetails(item: any): string {
   return `${parts.join("\n")}\n\n👉 Quer agendar uma visita? Posso te sugerir dois horários.`;
 }
 
-/** ---------- polimento opcional com LLM ---------- */
+/** -------------- polimento opcional com LLM -------------- */
 async function polishWithLLM(
   client: OpenAI,
   model: string,
@@ -122,7 +141,7 @@ async function polishWithLLM(
   }
 }
 
-/** ---------- prompt lookup ---------- */
+/** -------------- prompt lookup -------------- */
 type PromptConfig = {
   prompt?: string;
   temperature?: number;
@@ -169,7 +188,7 @@ async function getPromptForTicket(companyId: number | null | undefined, queueId?
   return {};
 }
 
-/** ---------- classificação e filtros ---------- */
+/** -------------- classificação e filtros -------------- */
 async function callPlanner(args: any) {
   const anyPlanner: any = Planner as any;
   if (typeof anyPlanner.plan === "function") return anyPlanner.plan(args);
@@ -208,13 +227,13 @@ function normalizeCriteria(anyC: any): Criteria {
   const c: Criteria = {};
   c.cidade = anyC.cidade || anyC.city;
   c.bairro = anyC.bairro || anyC.neighborhood;
-  c.tipo = anyC.tipo || anyC.tipo_imovel || anyC.type;
+  c.tipo = anyC.tipo || anyC.tipo_imovel || anyC.type || anyC.typeHint;
   c.dormitorios = anyC.dormitorios || anyC.quartos || anyC.bedrooms;
   c.vagas = anyC.vagas || anyC.garagem || anyC.parking;
-  c.precoMin = anyC.precoMin || anyC.preco_min;
-  c.precoMax = anyC.precoMax || anyC.preco_max;
-  c.areaMin = anyC.areaMin || anyC.area_min;
-  c.areaMax = anyC.areaMax || anyC.area_max;
+  c.precoMin = anyC.precoMin || anyC.preco_min || anyC.priceMin;
+  c.precoMax = anyC.precoMax || anyC.preco_max || anyC.priceMax;
+  c.areaMin = anyC.areaMin || anyC.area_min || anyC.areaMin;
+  c.areaMax = anyC.areaMax || anyC.area_max || anyC.areaMax;
   c.texto = anyC.texto || anyC.text;
   return c;
 }
@@ -250,14 +269,16 @@ async function callParseCriteria(companyId: number | null | undefined, text: str
     if (svc?.parseCriteria) return normalizeCriteria(await svc.parseCriteria(companyId, text, slots));
   } catch {}
   try {
+    // usa o parser do NLFilter (versão atual)
     const anyNF: any = NLFilter as any;
-    if (typeof anyNF.parseCriteria === "function") return normalizeCriteria(await anyNF.parseCriteria(text, slots));
-    if (typeof anyNF.parse === "function") return normalizeCriteria(await anyNF.parse(text, slots));
+    if (typeof anyNF.parseCriteriaFromText === "function") return normalizeCriteria(await anyNF.parseCriteriaFromText(text));
+    if (typeof anyNF.parseCriteria === "function") return normalizeCriteria(await anyNF.parseCriteria(text));
+    if (typeof anyNF.parse === "function") return normalizeCriteria(await anyNF.parse(text));
   } catch {}
   return normalizeCriteria({ texto: text, ...slots });
 }
 
-/** ---------- intenções extras ---------- */
+/** -------------- intenções extras -------------- */
 function askLGPDOnce(state: any): string | null {
   if (state?.lgpdShown) return null;
   return "Aviso LGPD: ao compartilhar dados pessoais (nome, e-mail, telefone), você concorda com nosso uso para contato sobre os imóveis. Você pode pedir para parar a qualquer momento.";
@@ -282,7 +303,7 @@ function detectCode(text: string): string | null {
   return (m && m[2]) ? m[2] : null;
 }
 
-/** ---------- lead básico ---------- */
+/** -------------- lead básico -------------- */
 async function maybeCaptureLead(text: string, contact: any) {
   try {
     const email = (text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [])[0];
@@ -294,7 +315,7 @@ async function maybeCaptureLead(text: string, contact: any) {
   } catch {}
 }
 
-/** ---------- busca ---------- */
+/** -------------- busca -------------- */
 async function callRunSearch(args: any) {
   try {
     if (typeof (RunSearchService as any).default === "function") return await (RunSearchService as any).default(args);
@@ -305,14 +326,14 @@ async function callRunSearch(args: any) {
   return { items: [], total: 0, page: 1, pageSize: args?.limit || 5, raw: null };
 }
 
-/** ---------- normalização de parâmetros ---------- */
+/** -------------- normalização de parâmetros -------------- */
 function normalizeArgs(args: any[]) {
   if (args.length === 1 && typeof args[0] === "object") return args[0];
   const [msg, wbot, contact, ticket, companyId, , , , flow, isMenu, whatsapp] = args as any[];
   return { msg, wbot, contact, ticket, companyId, flow, isMenu, whatsapp };
 }
 
-/** ---------- resolve companyId robusto ---------- */
+/** -------------- resolve companyId robusto -------------- */
 async function resolveCompanyId(ticket: any, contact?: any, fallback?: number | null): Promise<number | null> {
   if (ticket?.companyId) return Number(ticket.companyId);
   if (contact?.companyId) return Number(contact.companyId);
@@ -346,7 +367,7 @@ async function resolveCompanyId(ticket: any, contact?: any, fallback?: number | 
   return null;
 }
 
-/** ---------- extrator de fatos estruturados ---------- */
+/** -------------- extrator de fatos estruturados -------------- */
 async function extractStructuredFacts(text: string, reply: string) {
   try {
     const mod = await safeImport("../../AI/FactExtractors");
@@ -366,7 +387,7 @@ async function extractStructuredFacts(text: string, reply: string) {
   return facts;
 }
 
-/** ---------- núcleo ---------- */
+/** -------------- núcleo -------------- */
 const sessionsOpenAi: { id?: number; client: OpenAI }[] = [];
 const limiter = RateLimiter.forGlobal();
 
@@ -380,6 +401,20 @@ async function getOpenAiClient(companyId: number, overrideKey?: string) {
     sessionsOpenAi.push(session);
   }
   return session.client;
+}
+
+/** Mapeia nossos Criteria -> Criteria do NLFilter para ranking consistente */
+function toNLFilterCriteria(c: Criteria): NLFilter.Criteria {
+  return {
+    city: c.cidade || undefined,
+    neighborhood: c.bairro || undefined,
+    typeHint: c.tipo || undefined,
+    bedrooms: c.dormitorios ? Number(String(c.dormitorios).replace(/\D/g, "")) : undefined,
+    priceMin: c.precoMin ? Number(String(c.precoMin).replace(/[^\d]/g, "")) : undefined,
+    priceMax: c.precoMax ? Number(String(c.precoMax).replace(/[^\d]/g, "")) : undefined,
+    areaMin: c.areaMin ? Number(String(c.areaMin).replace(/[^\d]/g, "")) : undefined,
+    areaMax: c.areaMax ? Number(String(c.areaMax).replace(/[^\d]/g, "")) : undefined,
+  };
 }
 
 async function handleOpenAiCore(params: {
@@ -421,18 +456,15 @@ async function handleOpenAiCore(params: {
       return;
     }
 
-    // PROMPT
+    // PROMPT dinâmico por segmento + prompt do painel
     const promptCfg = await getPromptForTicket(companyId, ticket.queueId);
     let segment: string = "imoveis";
     try {
       const company = await Company.findByPk(companyId);
       if (company?.segment) segment = String(company.segment);
     } catch {}
-    let systemPrompt = (promptCfg.prompt || "").trim();
-    if (segment === "imoveis") {
-      const persona = (REAL_ESTATE_SYSTEM_PROMPT || "").trim();
-      systemPrompt = systemPrompt ? `${persona}\n\n${systemPrompt}` : persona;
-    }
+    const systemPrompt = await composeSystemPrompt(companyId, promptCfg.prompt);
+
     const temperature = typeof promptCfg.temperature === "number" ? promptCfg.temperature : 0.4;
     const maxTokens = typeof promptCfg.maxTokens === "number" ? promptCfg.maxTokens : 256;
 
@@ -447,29 +479,28 @@ async function handleOpenAiCore(params: {
       ? `Memória do cliente: ${longMem.map(m => `${m.key}=${m.value}`).join(", ")}`
       : "";
 
-    // ===== Estratégia nova: sempre tentar extrair e acumular filtros =====
+    // ===== Extrai e acumula critérios (slots) =====
     const parsedNow = await callParseCriteria(companyId, text, {});
     const lastCriteria: Criteria = convoState?.lastCriteria || {};
     const mergedCriteria = mergeCriteria(lastCriteria, parsedNow);
-
-    // salva critérios (mesmo que incompletos)
     await saveState(ticket.id, { ...(convoState || {}), lastCriteria: mergedCriteria });
 
-    // Decide intenção com fallback do Planner
+    // Decide intenção
     let plan = await callPlanner({
       text, memoryContext, lastState: convoState, longMem, companyId
     });
 
-    // Força inventário se tivermos info suficiente no segmento 'imoveis'
+    // Força inventário se já der para buscar
     if (segment === "imoveis" && enoughForSearch(mergedCriteria)) {
       plan = { intent: "browse_inventory", query_ready: true, slots: {}, followups: [] };
     }
 
-    // ===== atalhos de detalhe/paginação se já houve busca =====
+    // ===== atalhos: detalhes / paginação se já houve busca =====
     if (segment === "imoveis" && convoState?.lastSearch?.items?.length) {
       const idx = detectDetailsByIndex(text);
       if (idx !== null && idx > 0) {
-        const item = convoState.lastSearch.items[idx - 1];
+        const arr = (convoState.lastSearch.pageItems as any[]) || (convoState.lastSearch.items as any[]);
+        const item = arr[idx - 1];
         let detailsText = defaultWhatsAppDetails(item);
         try {
           const rmod = await safeImport("../../InventoryServices/Renderers/WhatsAppRenderer");
@@ -481,7 +512,8 @@ async function handleOpenAiCore(params: {
       }
       const code = detectCode(text);
       if (code) {
-        const item = (convoState.lastSearch.items as any[]).find(it =>
+        const allItems = (convoState.lastSearch.items as any[]) || [];
+        const item = allItems.find(it =>
           String(it.codigo || it.code || it.slug || it.id).toLowerCase() === code.toLowerCase()
         );
         if (item) {
@@ -499,21 +531,28 @@ async function handleOpenAiCore(params: {
         const chosen = await chooseIntegrationByTextCompat(companyId, text);
         const nextPage = (convoState.lastSearch.page || 1) + 1;
         const pageSize = convoState.lastSearch.pageSize || 10;
+        const criteria = convoState.lastSearch.criteria || {};
+
         const searchRes = await callRunSearch({
           companyId,
           integrationId: chosen?.id || convoState.lastSearch.integrationId,
-          criteria: convoState.lastSearch.criteria || {},
+          criteria,
           page: nextPage,
           limit: pageSize,
           sort: "relevance:desc",
           locale: "pt-BR"
         });
 
-        let rendered = defaultWhatsAppRenderer(searchRes.items || [], 3);
+        // HARD-FILTER + RANKING antes de mostrar
+        const nlCrit = toNLFilterCriteria(criteria);
+        const ranked = NLFilter.filterAndRankItems(searchRes.items || [], nlCrit);
+        const pageItems = NLFilter.paginateRanked(ranked, 1, 3);
+
+        let rendered = defaultWhatsAppRenderer(pageItems, 3);
         try {
           const rmod = await safeImport("../../InventoryServices/Renderers/WhatsAppRenderer");
           if (rmod?.renderWhatsAppList)
-            rendered = rmod.renderWhatsAppList(searchRes.items || [], { maxItems: 3 });
+            rendered = rmod.renderWhatsAppList(pageItems, { maxItems: 3 });
         } catch {}
 
         if (rendered && process.env.POLISH_WITH_LLM === "true") {
@@ -524,11 +563,12 @@ async function handleOpenAiCore(params: {
           ...(convoState || {}),
           lastSearch: {
             integrationId: chosen?.id || convoState.lastSearch.integrationId,
-            criteria: convoState.lastSearch.criteria,
+            criteria,
             page: nextPage,
             pageSize,
             total: searchRes.total || 0,
-            items: searchRes.items || []
+            items: ranked,       // guarda ordenado
+            pageItems            // guarda os 3 mostrados
           }
         });
 
@@ -541,8 +581,7 @@ async function handleOpenAiCore(params: {
     // ===== SMALLTALK / Q&A =====
     if (plan.intent !== "browse_inventory") {
       const messages: { role: "system" | "user" | "assistant"; content: string }[] = [];
-      if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
-      else messages.push({ role: "system", content: "Você é um atendente simpático, útil e objetivo. Responda em pt-BR." });
+      messages.push({ role: "system", content: systemPrompt });
 
       const lgpd = askLGPDOnce(convoState);
       if (lgpd) messages.push({ role: "system", content: `Mensagem obrigatória: ${lgpd}` });
@@ -559,11 +598,11 @@ async function handleOpenAiCore(params: {
 
       let answer = chat.choices?.[0]?.message?.content?.trim();
 
-      // Se não trouxe nada útil, caia para pergunta FOCADA com base nos slots que faltam
+      // Pergunta focada (no máx. 2 slots) se necessário
       if (!answer || /qual bairro|qual tipo|está procurando\?/i.test(answer)) {
         const miss = missingSlot(mergedCriteria);
         if (miss === "local") answer = "Perfeito! Me diga a *cidade ou bairro* de preferência 😉";
-        else if (miss === "tipo_ou_dormitorios") answer = "Ótimo! Prefere *casa, apartamento, terreno*…? E se puder, quantos *dormitórios*?";
+        else if (miss === "tipo_ou_dormitorios") answer = "Ótimo! Prefere *casa, apartamento ou studio*? E quantos *dormitórios*?";
         else if (miss === "preco") answer = "Tem uma *faixa de preço* em mente? Posso te sugerir ótimas opções dentro do seu orçamento.";
       }
 
@@ -574,7 +613,7 @@ async function handleOpenAiCore(params: {
         return;
       }
 
-      // anti-loop: se a última pergunta foi igual, mude a pergunta
+      // anti-loop
       const lastQ = convoState?.lastQuestion || "";
       if (answer === lastQ) {
         const miss = missingSlot(mergedCriteria);
@@ -607,8 +646,9 @@ async function handleOpenAiCore(params: {
 
     // ===== INVENTÁRIO =====
     const chosen = await chooseIntegrationByTextCompat(companyId, text);
-    const criteria = mergedCriteria; // usa o que foi acumulado
-    // Agendamento (antes da busca, se o lead pedir)
+    const criteria = mergedCriteria;
+
+    // Agendamento direto
     if (segment === "imoveis" && detectVisitIntent(text)) {
       await VisitService.requestVisit({
         companyId,
@@ -629,10 +669,15 @@ async function handleOpenAiCore(params: {
       integrationId: chosen?.id,
       criteria,
       page: 1,
-      limit: 10,
+      limit: 20,
       sort: "relevance:desc",
       locale: "pt-BR"
     });
+
+    // HARD-FILTER + RANKING + paginação (mostra 3)
+    const nlCrit = toNLFilterCriteria(criteria);
+    const ranked = NLFilter.filterAndRankItems(searchRes.items || [], nlCrit);
+    const pageItems = NLFilter.paginateRanked(ranked, 1, 3);
 
     await saveState(ticket.id, {
       ...(convoState || {}),
@@ -642,8 +687,9 @@ async function handleOpenAiCore(params: {
         criteria,
         page: 1,
         pageSize: 10,
-        total: searchRes.total || 0,
-        items: searchRes.items || []
+        total: searchRes.total || ranked.length || 0,
+        items: ranked,
+        pageItems
       }
     });
 
@@ -654,26 +700,26 @@ async function handleOpenAiCore(params: {
         const renderFn =
           rmod?.renderWhatsAppList ||
           ((items: any[]) => defaultWhatsAppRenderer(items, 3));
-        renderedText = renderFn(searchRes.items || [], {
+        renderedText = renderFn(pageItems, {
           headerTitle: "🌟 Opções selecionadas",
           categoryHint: "imóveis",
           maxItems: 3,
           showIndexEmojis: true
         });
       } catch {
-        renderedText = defaultWhatsAppRenderer(searchRes.items || [], 3);
+        renderedText = defaultWhatsAppRenderer(pageItems, 3);
       }
     }
 
     if (!renderedText) {
       if ((InventoryFormatter as any).formatInventoryReplyWithPrompt && systemPrompt) {
         renderedText = (InventoryFormatter as any).formatInventoryReplyWithPrompt(
-          { items: searchRes.items || [], total: searchRes.total || 0, criteria }, systemPrompt);
+          { items: pageItems, total: searchRes.total || ranked.length || 0, criteria }, systemPrompt);
       } else if ((InventoryFormatter as any).formatInventoryReply) {
         renderedText = (InventoryFormatter as any).formatInventoryReply(
-          { items: searchRes.items || [], total: searchRes.total || 0, criteria });
+          { items: pageItems, total: searchRes.total || ranked.length || 0, criteria });
       } else {
-        renderedText = JSON.stringify({ items: searchRes.items || [], total: searchRes.total || 0 }, null, 2);
+        renderedText = JSON.stringify({ items: pageItems, total: searchRes.total || ranked.length || 0 }, null, 2);
       }
     }
 
