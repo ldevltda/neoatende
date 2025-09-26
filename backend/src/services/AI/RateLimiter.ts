@@ -1,5 +1,6 @@
-import IORedis, { RedisOptions } from "ioredis";
-import dns from "node:dns";
+// backend/src/services/AI/RateLimiter.ts
+import IORedis from "ioredis";
+import { getIORedisOptions } from "../../config/redis";
 
 type BucketState = { tokens: number; ts: number };
 
@@ -7,42 +8,13 @@ let _redis: IORedis | null = null;
 let _redisHealthy = false;
 const memBuckets = new Map<string, BucketState>();
 
-async function preResolve(url: URL) {
-  try {
-    const all = await dns.promises.lookup(url.hostname, { all: true });
-    const pick = all.find(a => a.family === 6) || all.find(a => a.family === 4);
-    if (!pick) return null;
-    return { host: pick.address, port: Number(url.port || 6379) };
-  } catch {
-    return null;
-  }
-}
-
 async function buildRedisFromEnv(): Promise<IORedis | null> {
-  const raw = process.env.REDIS_URL || process.env.REDIS_URI_CONNECTION;
-  if (!raw) return null;
+  const url = process.env.REDIS_URL;
+  if (!url) return null;
 
-  let url: URL;
-  try { url = new URL(raw); } catch { return null; }
-
-  const pr = await preResolve(url); // pode ser null (sem problema)
-  const tls = url.protocol === "rediss:";
-
-  const baseOpts: RedisOptions = {
-    host: pr?.host || url.hostname,
-    port: pr?.port || Number(url.port || 6379),
-    username: url.username || undefined,
-    password: url.password || undefined,
-    tls: tls ? {} : undefined,
-    maxRetriesPerRequest: 2,
-    enableReadyCheck: false,
-    retryStrategy(times) { return Math.min(1000 * times, 15000); },
-    reconnectOnError(err) { return /READONLY|ETIMEDOUT|ECONNRESET|ENOTFOUND/i.test(err.message); }
-  };
-
-  const client = new IORedis(baseOpts);
+  const client = new IORedis(getIORedisOptions());
   client.on("ready", () => (_redisHealthy = true));
-  client.on("error", () => (_redisHealthy = false)); // consome erro para não derrubar o processo
+  client.on("error", () => (_redisHealthy = false)); // não derruba o processo
   return client;
 }
 

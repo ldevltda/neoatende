@@ -1,50 +1,15 @@
-import IORedis, { RedisOptions } from "ioredis";
-import { REDIS_URI_CONNECTION } from "../config/redis";
+// backend/src/libs/cache.ts
+import IORedis from "ioredis";
+import { getIORedisOptions } from "../config/redis";
 import * as crypto from "crypto";
-import dns from "dns/promises";
 
 /**
- * Criamos o cliente Redis de forma lazy (on-demand) para:
- * - Resolver o hostname para IPv6 (AAAA), que é o que o Fly expõe no nslookup
- * - Habilitar TLS automaticamente quando a URL for rediss://
- * - Usar opções de reconexão estáveis
+ * Cliente redis lazy, usando as MESMAS opções centralizadas do projeto.
  */
-
 let redisPromise: Promise<IORedis> | null = null;
 
 async function createRedis(): Promise<IORedis> {
-  // Faz o parse da URL (funciona para redis:// e rediss://)
-  const u = new URL(REDIS_URI_CONNECTION);
-  const isTLS = u.protocol === "rediss:";
-  const port = Number(u.port || "6379");
-  const username = u.username || undefined;
-  const password = u.password || undefined;
-
-  // Resolve hostname para IPv6 (AAAA) — se falhar, usa o host original
-  let host = u.hostname;
-  try {
-    const { address } = await dns.lookup(u.hostname, { family: 6 });
-    host = address;
-  } catch {
-    // sem drama; segue com o hostname
-  }
-
-  const options: RedisOptions = {
-    host,
-    port,
-    username,
-    password,
-    // família IPv6 melhora com Fly/Upstash
-    family: 6,
-    // opções de robustez
-    maxRetriesPerRequest: null,
-    enableReadyCheck: true,
-    retryStrategy: (times) => Math.min(times * 200, 2000),
-    reconnectOnError: () => true,
-    ...(isTLS ? { tls: {} } : {})
-  };
-
-  const client = new IORedis(options);
+  const client = new IORedis(getIORedisOptions());
 
   // logs “amigáveis” (não derrubam o processo)
   client.on("error", (e) => {
@@ -59,14 +24,14 @@ async function getRedis(): Promise<IORedis> {
   return redisPromise;
 }
 
-function encryptParams(params: any) {
+function encryptParams(params: unknown) {
   const str = JSON.stringify(params);
   return crypto.createHash("sha256").update(str).digest("base64");
 }
 
 export async function setFromParams(
   key: string,
-  params: any,
+  params: unknown,
   value: string,
   option?: "EX" | "PX" | "EXAT" | "PXAT" | "NX" | "XX" | "KEEPTTL",
   optionValue?: string | number
@@ -75,12 +40,12 @@ export async function setFromParams(
   return set(finalKey, value, option as any, optionValue as any);
 }
 
-export async function getFromParams(key: string, params: any) {
+export async function getFromParams(key: string, params: unknown) {
   const finalKey = `${key}:${encryptParams(params)}`;
   return get(finalKey);
 }
 
-export async function delFromParams(key: string, params: any) {
+export async function delFromParams(key: string, params: unknown) {
   const finalKey = `${key}:${encryptParams(params)}`;
   return del(finalKey);
 }
