@@ -1,48 +1,18 @@
 // backend/src/services/FollowUpService/LeadFollowupQueue.ts
-import Queue, { Queue as BullQueue, QueueOptions } from "bull";
+import Queue from "bull";
+import { REDIS_URI_CONNECTION } from "../../config/redis";
 import { getTicketById, sendWhatsAppText, getLastInboundAt } from "./helpers";
 import { logger } from "../../utils/logger";
 
 type JobData = { ticketId: number; companyId: number; step: "6h" | "12h" | "24h" };
 
-let leadQueue: BullQueue<JobData> | null = null;
-
-function buildBullOptionsFromUrl(url: string): QueueOptions {
-  const u = new URL(url);
-  const isTLS = u.protocol === "rediss:";
-  // Upstash usa ACL (username/password). ioredis aceita ambos em options.
-  const username = u.username ? decodeURIComponent(u.username) : undefined;
-  const password = u.password ? decodeURIComponent(u.password) : undefined;
-
-  return {
-    // NÃO passe createClient/instances de ioredis — deixe o Bull criar os clientes
-    redis: {
-      host: u.hostname,
-      port: Number(u.port || 6379),
-      username,
-      password,
-      // força IPv4 pra evitar ENOTFOUND em IPv6 no Fly
-      family: 4,
-      // ativa TLS se a URL for rediss://
-      tls: isTLS ? {} : undefined,
-      // timeouts mais generosos pra rede do Fly
-      connectTimeout: 10000,
-      keepAlive: 10000
-    }
-  };
-}
-
-function createBullQueue(): BullQueue<JobData> {
-  const url = process.env.REDIS_URL || "redis://127.0.0.1:6379";
-  // Se for uma URL, convertemos para options (isso também contorna o bug 1873)
-  const opts = buildBullOptionsFromUrl(url);
-  return new Queue<JobData>("lead-followups", opts);
-}
+let leadQueue: Queue.Queue<JobData> | null = null;
 
 export function startLeadFollowupQueue() {
   if (leadQueue) return leadQueue;
 
-  leadQueue = createBullQueue();
+  // Usa exatamente o mesmo DSN do resto do projeto (redis:// ou rediss://)
+  leadQueue = new Queue<JobData>("lead-followups", REDIS_URI_CONNECTION);
 
   leadQueue.process(async job => {
     const { ticketId, companyId, step } = job.data;
@@ -70,15 +40,16 @@ export function startLeadFollowupQueue() {
     await sendWhatsAppText(ticket, msg);
   });
 
-  // Se o DNS falhar em algum momento, não derruba a app; só loga e o Bull tenta de novo
+  // Só loga o erro da fila — não deixa derrubar o processo
   leadQueue.on("error", err => logger.error({ err }, "lead-followups queue error"));
-  leadQueue.on("stalled", job => logger.warn({ jobId: job.id }, "lead-followups job stalled"));
 
   return leadQueue;
 }
 
 export async function scheduleLeadFollowups(ticket: any) {
   const q = startLeadFollowupQueue();
+  if (!q) return;
+
   const base = { ticketId: ticket.id, companyId: ticket.companyId };
   await q.add({ ...base, step: "6h"  }, { delay:  6 * 60 * 60 * 1000, removeOnComplete: true, removeOnFail: true });
   await q.add({ ...base, step: "12h" }, { delay: 12 * 60 * 60 * 1000, removeOnComplete: true, removeOnFail: true });
@@ -86,8 +57,8 @@ export async function scheduleLeadFollowups(ticket: any) {
 }
 
 export async function cancelLeadFollowups(ticket: any) {
-  const q = startLeadFollowupQueue();
-  const jobs = await q.getDelayed();
+  if (!leadQueue) return;
+  const jobs = await leadQueue.getDelayed();
   await Promise.all(
     jobs
       .filter(j => j.data.ticketId === ticket.id && j.data.companyId === ticket.companyId)
