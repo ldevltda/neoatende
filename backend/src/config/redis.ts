@@ -1,66 +1,110 @@
 ﻿// backend/src/config/redis.ts
-import { URL } from "node:url";
-import dns from "node:dns/promises";
+import IORedis, { RedisOptions } from "ioredis";
 
-const pickRedisUrl = () =>
-  process.env.REDIS_URL ||          // <-- sua .env terá só isso
-  process.env.REDIS_URI ||          // fallbacks antigos (se existirem em algum ambiente)
-  process.env.UPSTASH_REDIS_URL ||  // fallbacks antigos
-  "";
-
-/** Retorna a URL do Redis ou lança erro com mensagem clara */
-export const getRedisUrl = (): string => {
-  const url = pickRedisUrl();
+/**
+ * Pega a URL do Redis. Suporta nomes diferentes usados no projeto.
+ */
+export function getRedisUrl(): string {
+  const url =
+    process.env.REDIS_URL ||
+    process.env.REDIS_URI ||
+    process.env.REDIS_URI_CONNECTION ||
+    "";
   if (!url) {
     throw new Error(
-      "Redis URL não configurada. Defina REDIS_URL no .env (ou via secret no Fly)."
+      "Redis URL não encontrada. Defina REDIS_URL no ambiente (.env)."
     );
   }
-  return url;
-};
+  return url.trim();
+}
 
-export type IORedisOptions = {
-  host: string;
-  port: number;
-  username?: string;
-  password?: string;
-  tls?: Record<string, unknown>;
-  connectTimeout?: number;
-  maxRetriesPerRequest?: number | null;
-  enableReadyCheck?: boolean;
-  lazyConnect?: boolean;
-};
+/**
+ * Faz o parse manual da URL para criarmos o client com host/port e,
+ * assim, aplicarmos TLS quando precisar.
+ */
+export function parseRedisUrl(urlStr: string) {
+  const u = new URL(urlStr);
+  const useTls =
+    u.protocol === "rediss:" || process.env.REDIS_TLS === "1" ? true : false;
+  const host = u.hostname;
+  const port = Number(u.port || 6379);
+  const username = decodeURIComponent(u.username || "default");
+  const password = decodeURIComponent(u.password || "");
 
-/** Constrói opções compatíveis com ioredis/Bull a partir da URL única */
-export const getIORedisOptions = (): IORedisOptions => {
-  const raw = getRedisUrl();
-  const u = new URL(raw);
+  return { host, port, username, password, useTls };
+}
 
-  // Liga TLS quando for rediss:// OU domínio da Upstash
-  const isTls = u.protocol === "rediss:" || /\.upstash\.io$/i.test(u.hostname);
+/**
+ * Opções robustas para rodar no Fly + Upstash (ioredis):
+ * - enableReadyCheck: false
+ * - maxRetriesPerRequest: null (requisito do Bull)
+ * - retryStrategy: backoff exponencial até 30s
+ * - connectTimeout: 10s
+ * - tls: {} quando for rediss://
+ */
+export function getIORedisOptions(): RedisOptions {
+  const { host, port, username, password, useTls } = parseRedisUrl(
+    getRedisUrl()
+  );
 
-  return {
-    host: u.hostname,
-    port: Number(u.port || 6379),
-    username: u.username || "default",
-    password: u.password || undefined,
-    tls: isTls ? {} : undefined,
-    connectTimeout: 20_000,
-    // evita crash "MaxRetriesPerRequestError"
-    maxRetriesPerRequest: null,
-    // Upstash não precisa do ready check
+  const opts: RedisOptions = {
+    host,
+    port,
+    username,
+    password,
     enableReadyCheck: false,
-    lazyConnect: false,
+    maxRetriesPerRequest: null as any,
+    connectTimeout: 10_000,
+    retryStrategy: (times: number) => Math.min(1000 * 2 ** times, 30000)
   };
-};
 
-/** Verifica se o host resolve em DNS para falhar cedo com mensagem clara */
-export const assertRedisReachable = async () => {
-  const { host } = getIORedisOptions();
-  await dns.lookup(host).catch((err: any) => {
-    throw new Error(
-      `DNS falhou para o host Redis "${host}" (${err?.code || err?.message}). ` +
-      `Confirme o endpoint em .env (REDIS_URL).`
-    );
-  });
-};
+  if (useTls) {
+    // Upstash TLS
+    opts.tls = { servername: host };
+  }
+
+  return opts;
+}
+
+/**
+ * Helper para o Bull: devolve a factory createClient com as MESMAS opções
+ * para client/subscriber/bclient.
+ */
+export function makeBullCreateClient() {
+  const url = getRedisUrl();
+  const base = getIORedisOptions();
+  const parsed = parseRedisUrl(url);
+
+  // Criamos via objeto (host/port/username/password) para garantir TLS etc.
+  const conn: RedisOptions = {
+    ...base,
+    host: parsed.host,
+    port: parsed.port,
+    username: parsed.username,
+    password: parsed.password
+  };
+
+  return (_type: "client" | "subscriber" | "bclient") => new IORedis(conn);
+}
+
+/**
+ * Verifica rapidamente se o Redis está acessível (PING com timeout).
+ * Útil para falhar cedo se host/env estiver errado.
+ */
+export async function assertRedisReachable(timeoutMs = 8000): Promise<void> {
+  const client = new IORedis(getIORedisOptions());
+  const timer = setTimeout(() => {
+    try {
+      client.disconnect();
+    } catch {}
+  }, timeoutMs);
+
+  try {
+    await client.ping();
+  } finally {
+    clearTimeout(timer);
+    try {
+      client.disconnect();
+    } catch {}
+  }
+}

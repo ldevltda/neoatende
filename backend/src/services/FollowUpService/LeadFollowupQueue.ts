@@ -1,11 +1,15 @@
 // backend/src/services/FollowUpService/LeadFollowupQueue.ts
 import Queue from "bull";
 import IORedis from "ioredis";
-import { getRedisUrl, getIORedisOptions } from "../../config/redis";
+import {
+  getRedisUrl,
+  getIORedisOptions,
+  parseRedisUrl,
+  makeBullCreateClient
+} from "../../config/redis";
 import { getTicketById, sendWhatsAppText, getLastInboundAt } from "./helpers";
 import { logger } from "../../utils/logger";
 
-// Mantemos a tipagem do job
 export type JobData = {
   ticketId: number;
   companyId: number;
@@ -15,20 +19,17 @@ export type JobData = {
 let leadQueue: Queue.Queue<JobData> | null = null;
 
 /**
- * Cria (ou retorna) a fila Bull compartilhando a MESMA conexão Redis
- * usada no restante do backend (Upstash-ready: TLS, readyCheck off,
- * maxRetriesPerRequest=null, dnsLookup IPv4 etc.).
+ * Cria (ou retorna) a fila Bull usando a MESMA conexão Redis
+ * que todo o backend usa (Upstash-ready).
  */
 export function startLeadFollowupQueue() {
   if (leadQueue) return leadQueue;
 
-  const redisUrl = getRedisUrl();
-  const redisOpts = getIORedisOptions();
+  // Garantimos opções robustas (IPv4, TLS quando rediss, retry/backoff etc.)
+  const bullCreateClient = makeBullCreateClient();
 
-  // Usa createClient para que Bull crie client/subscriber/bclient com as MESMAS opções
   leadQueue = new Queue<JobData>("lead-followups", {
-    createClient: (_type: "client" | "subscriber" | "bclient") =>
-      new IORedis(redisUrl, redisOpts)
+    createClient: bullCreateClient
   });
 
   // Processador de jobs
@@ -39,7 +40,7 @@ export function startLeadFollowupQueue() {
       const ticket = await getTicketById(ticketId, companyId);
       if (!ticket) return;
 
-      // Se o cliente respondeu após o agendamento desse job, não enviar
+      // Se o cliente respondeu após o agendamento desse job, não envia
       const lastInboundAt = await getLastInboundAt(ticketId, companyId);
       if (lastInboundAt && lastInboundAt > new Date(job.timestamp)) return;
 
@@ -59,13 +60,17 @@ export function startLeadFollowupQueue() {
       await sendWhatsAppText(ticket, msg);
     } catch (err) {
       logger.error({ err }, "lead-followups job error");
-      throw err; // deixa o Bull fazer retry/backoff padrão se configurado
+      throw err;
     }
   });
 
-  // Observabilidade básica / não derruba a aplicação
-  leadQueue.on("error", err => logger.error({ err }, "lead-followups queue error"));
-  leadQueue.on("stalled", job => logger.warn({ jobId: job.id }, "lead-followups job stalled"));
+  // Observabilidade (não derrubar a app)
+  leadQueue.on("error", err =>
+    logger.error({ err }, "lead-followups queue error")
+  );
+  leadQueue.on("stalled", job =>
+    logger.warn({ jobId: job.id }, "lead-followups job stalled")
+  );
 
   return leadQueue;
 }
@@ -99,7 +104,9 @@ export async function cancelLeadFollowups(ticket: any) {
 
   await Promise.all(
     jobs
-      .filter(j => j.data.ticketId === ticket.id && j.data.companyId === ticket.companyId)
+      .filter(
+        j => j.data.ticketId === ticket.id && j.data.companyId === ticket.companyId
+      )
       .map(j => j.remove())
   );
 }
