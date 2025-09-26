@@ -1,24 +1,66 @@
-import dotenv from "dotenv";
-dotenv.config();
+﻿// backend/src/config/redis.ts
+import { URL } from "node:url";
+import dns from "node:dns/promises";
 
-/**
- * Escolhe a URL do Redis a partir de:
- * 1) REDIS_URL
- * 2) REDIS_URI_CONNECTION
- * 3) Monta com REDIS_HOST/REDIS_PORT/REDIS_DB (fallback)
- *
- * Observação: Upstash geralmente usa TLS (rediss://).
- */
-const RAW_URL =
-  process.env.REDIS_URL ||
-  process.env.REDIS_URI_CONNECTION ||
-  `redis://${process.env.REDIS_HOST || "redis"}:${process.env.REDIS_PORT || "6379"}/${process.env.REDIS_DB || "0"}`;
+const pickRedisUrl = () =>
+  process.env.REDIS_URL ||          // <-- sua .env terá só isso
+  process.env.REDIS_URI ||          // fallbacks antigos (se existirem em algum ambiente)
+  process.env.UPSTASH_REDIS_URL ||  // fallbacks antigos
+  "";
 
-// Exporta a string que o restante do código usa
-export const REDIS_URI_CONNECTION = RAW_URL;
-
-export default {
-  url: REDIS_URI_CONNECTION
+/** Retorna a URL do Redis ou lança erro com mensagem clara */
+export const getRedisUrl = (): string => {
+  const url = pickRedisUrl();
+  if (!url) {
+    throw new Error(
+      "Redis URL não configurada. Defina REDIS_URL no .env (ou via secret no Fly)."
+    );
+  }
+  return url;
 };
 
-// teste
+export type IORedisOptions = {
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  tls?: Record<string, unknown>;
+  connectTimeout?: number;
+  maxRetriesPerRequest?: number | null;
+  enableReadyCheck?: boolean;
+  lazyConnect?: boolean;
+};
+
+/** Constrói opções compatíveis com ioredis/Bull a partir da URL única */
+export const getIORedisOptions = (): IORedisOptions => {
+  const raw = getRedisUrl();
+  const u = new URL(raw);
+
+  // Liga TLS quando for rediss:// OU domínio da Upstash
+  const isTls = u.protocol === "rediss:" || /\.upstash\.io$/i.test(u.hostname);
+
+  return {
+    host: u.hostname,
+    port: Number(u.port || 6379),
+    username: u.username || "default",
+    password: u.password || undefined,
+    tls: isTls ? {} : undefined,
+    connectTimeout: 20_000,
+    // evita crash "MaxRetriesPerRequestError"
+    maxRetriesPerRequest: null,
+    // Upstash não precisa do ready check
+    enableReadyCheck: false,
+    lazyConnect: false,
+  };
+};
+
+/** Verifica se o host resolve em DNS para falhar cedo com mensagem clara */
+export const assertRedisReachable = async () => {
+  const { host } = getIORedisOptions();
+  await dns.lookup(host).catch((err: any) => {
+    throw new Error(
+      `DNS falhou para o host Redis "${host}" (${err?.code || err?.message}). ` +
+      `Confirme o endpoint em .env (REDIS_URL).`
+    );
+  });
+};
