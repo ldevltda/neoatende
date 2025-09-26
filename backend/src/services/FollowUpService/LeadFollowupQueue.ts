@@ -1,16 +1,42 @@
-import Queue from "bull";
+// backend/src/services/FollowUpService/LeadFollowupQueue.ts
+import Queue, { Queue as BullQueue, QueueOptions } from "bull";
 import { getTicketById, sendWhatsAppText, getLastInboundAt } from "./helpers";
 import { logger } from "../../utils/logger";
 
 type JobData = { ticketId: number; companyId: number; step: "6h" | "12h" | "24h" };
 
-let leadQueue: Queue.Queue<JobData> | null = null;
+let leadQueue: BullQueue<JobData> | null = null;
 
-/** Cria a fila usando SOMENTE a URL do Redis que já está no ambiente.
- *  Isso evita o erro do Bull: "enableReadyCheck/maxRetriesPerRequest for bclient/subscriber". */
-function createBullQueue(): Queue.Queue<JobData> {
+function buildBullOptionsFromUrl(url: string): QueueOptions {
+  const u = new URL(url);
+  const isTLS = u.protocol === "rediss:";
+  // Upstash usa ACL (username/password). ioredis aceita ambos em options.
+  const username = u.username ? decodeURIComponent(u.username) : undefined;
+  const password = u.password ? decodeURIComponent(u.password) : undefined;
+
+  return {
+    // NÃO passe createClient/instances de ioredis — deixe o Bull criar os clientes
+    redis: {
+      host: u.hostname,
+      port: Number(u.port || 6379),
+      username,
+      password,
+      // força IPv4 pra evitar ENOTFOUND em IPv6 no Fly
+      family: 4,
+      // ativa TLS se a URL for rediss://
+      tls: isTLS ? {} : undefined,
+      // timeouts mais generosos pra rede do Fly
+      connectTimeout: 10000,
+      keepAlive: 10000
+    }
+  };
+}
+
+function createBullQueue(): BullQueue<JobData> {
   const url = process.env.REDIS_URL || "redis://127.0.0.1:6379";
-  return new Queue<JobData>("lead-followups", url);
+  // Se for uma URL, convertemos para options (isso também contorna o bug 1873)
+  const opts = buildBullOptionsFromUrl(url);
+  return new Queue<JobData>("lead-followups", opts);
 }
 
 export function startLeadFollowupQueue() {
@@ -20,10 +46,11 @@ export function startLeadFollowupQueue() {
 
   leadQueue.process(async job => {
     const { ticketId, companyId, step } = job.data;
+
     const ticket = await getTicketById(ticketId, companyId);
     if (!ticket) return;
 
-    // se o cliente respondeu depois do agendamento, não manda
+    // se o cliente respondeu depois do agendamento, não envia
     const lastInboundAt = await getLastInboundAt(ticketId, companyId);
     if (lastInboundAt && lastInboundAt > new Date(job.timestamp)) return;
 
@@ -43,6 +70,7 @@ export function startLeadFollowupQueue() {
     await sendWhatsAppText(ticket, msg);
   });
 
+  // Se o DNS falhar em algum momento, não derruba a app; só loga e o Bull tenta de novo
   leadQueue.on("error", err => logger.error({ err }, "lead-followups queue error"));
   leadQueue.on("stalled", job => logger.warn({ jobId: job.id }, "lead-followups job stalled"));
 
