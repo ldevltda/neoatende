@@ -10,6 +10,7 @@ import Company from "./models/Company";
 import { startQueueProcess } from "./queues";
 import { TransferTicketQueue } from "./wbotTransferTicketQueue";
 import cron from "node-cron";
+import { startLeadFollowupQueue } from "./services/FollowUpService/LeadFollowupQueue";
 
 const port = parseInt(process.env.PORT || "3000", 10);
 
@@ -25,6 +26,7 @@ const server = app.listen(port, "0.0.0.0", async () => {
 
     await Promise.all(allPromises);
     startQueueProcess();
+    startLeadFollowupQueue();
 
     logger.info(`✅ Server started on http://0.0.0.0:${port}`);
   } catch (error) {

@@ -23,6 +23,9 @@ import { calcularBudget } from "../../Finance/FinancingCalculator";
 import { T as WappTmpl } from "../../Agents/templates/whatsappTemplates";
 import { scoreLead } from "../../Leads/scoreLead";
 
+import { scheduleLeadFollowups, cancelLeadFollowups } from "../../FollowUpService/LeadFollowupQueue";
+// (removido) import { shouldHandoff } from "../../OpenAiService/handoffRules";
+
 // ---------------------------------------------------------
 /** utils: dynamic import com fallback require */
 async function safeImport(modulePath: string): Promise<any | null> {
@@ -467,6 +470,16 @@ function toNLFilterCriteria(c: Criteria): NLFilter.Criteria {
   };
 }
 
+/** helpers de mapeamento para scoreLead (evita TS 2353) */
+function mapMomentoToMeses(m?: Criteria["momento"] | null): number | undefined {
+  if (!m) return undefined;
+  if (m === "agora") return 0;
+  if (m === "1-3m") return 3;
+  if (m === "3-6m") return 6;
+  return 999; // pesquisando
+}
+function truthy(v: any): boolean { return !!v; }
+
 /** CORE */
 async function handleOpenAiCore(params: {
   msg: proto.IWebMessageInfo;
@@ -491,6 +504,9 @@ async function handleOpenAiCore(params: {
         : "";
     if (!bodyMessage) return;
     const text = (bodyMessage || "").trim();
+
+    // 🔔 qualquer resposta do cliente cancela follow-ups pendentes
+    try { await cancelLeadFollowups(ticket); } catch {}
 
     await maybeCaptureLead(text, contact);
 
@@ -655,19 +671,18 @@ async function handleOpenAiCore(params: {
       const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: resumo + "\n\n" + WappTmpl.agendamento() });
       try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
 
-      // score do lead
+      // ✅ score do lead (mapeando corretamente para LeadInputs)
       try {
-        const sc = scoreLead({
-          income: rendaNum,
-          downPaymentPct: null,
-          hasFGTS: hasFGTS,
-          moment: (mergedCriteria as any).momento || null,
-          hasObjectiveCriteria: !!((mergedCriteria as any).tipo || (mergedCriteria as any).dormitorios),
-          hasClearGeo: !!((mergedCriteria as any).bairro || (mergedCriteria as any).cidade),
-          engagementFast: true
+        const { score: sc, stage } = scoreLead({
+          rendaFamiliar: rendaNum,
+          entradaPercent: entradaNum > 0 ? Math.round((entradaNum / Math.max(budget.faixaImovel.maximo, 1)) * 100) : undefined,
+          temFGTS: hasFGTS,
+          momentoMeses: mapMomentoToMeses((mergedCriteria as any).momento || null),
+          criteriosClaros: truthy((mergedCriteria as any).tipo || (mergedCriteria as any).dormitorios),
+          localDefinido: truthy((mergedCriteria as any).bairro || (mergedCriteria as any).cidade),
+          engajamentoRapido: true
         });
-        const stage = sc >= 80 ? "A" : sc >= 60 ? "B" : "C";
-        try { await ticket.update({ leadScore: sc, leadStage: stage }); } catch {}
+        try { await ticket.update({ leadScore: sc, leadStage: stage } as any); } catch {}
         try { await ltm.upsert(companyId, contact.id, [{ key: "lead_score", value: String(sc), confidence: 0.9 }]); } catch {}
       } catch {}
 
@@ -697,6 +712,8 @@ async function handleOpenAiCore(params: {
               try { const rmod = await safeImport("../../InventoryServices/Renderers/WhatsAppRenderer");
                 if (rmod?.renderWhatsAppList) rendered = rmod.renderWhatsAppList(pageItems, { maxItems: 3 }); } catch {}
               await wbot.sendMessage(msg.key.remoteJid!, { text: rendered });
+              // agenda follow-ups porque houve proposta real
+              try { await scheduleLeadFollowups(ticket); } catch {}
             }
           }
         } else {
@@ -724,13 +741,15 @@ async function handleOpenAiCore(params: {
       const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: reply });
       try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
 
+      // ✅ score A/B/C coerente com venda (sem renda obrigatória)
       try {
-        const sc = scoreLead({
-          income: null, downPaymentPct: null, hasFGTS: null,
-          moment: "1-3m", hasObjectiveCriteria: true, hasClearGeo: true, engagementFast: true
+        const { score: sc, stage } = scoreLead({
+          criteriosClaros: true,
+          localDefinido: true,
+          momentoMeses: 3,
+          engajamentoRapido: true
         });
-        const stage = sc >= 80 ? "A" : sc >= 60 ? "B" : "C";
-        try { await ticket.update({ leadScore: sc, leadStage: stage }); } catch {}
+        try { await ticket.update({ leadScore: sc, leadStage: stage } as any); } catch {}
         try { await ltm.upsert(companyId, contact.id, [{ key: "lead_score", value: String(sc), confidence: 0.8 }]); } catch {}
       } catch {}
       return;
@@ -821,19 +840,18 @@ async function handleOpenAiCore(params: {
       const sent = await wbot.sendMessage(msg.key.remoteJid!, { text: reply });
       try { const { verifyMessage } = await import("./mediaHelpers"); await verifyMessage(sent, ticket, contact); } catch {}
 
-      // score rápido
+      // ✅ score rápido
       try {
-        const sc = scoreLead({
-          income: Number(String((criteria as any).renda || "").replace(/[^\d]/g, "")) || null,
-          downPaymentPct: null,
-          hasFGTS: !!(criteria as any).fgts,
-          moment: "agora",
-          hasObjectiveCriteria: !!(criteria as any).tipo || !!(criteria as any).dormitorios,
-          hasClearGeo: !!(criteria as any).bairro || !!(criteria as any).cidade,
-          engagementFast: true
+        const { score: sc, stage } = scoreLead({
+          rendaFamiliar: Number(String((criteria as any).renda || "").replace(/[^\d]/g, "")) || undefined,
+          entradaPercent: undefined,
+          temFGTS: !!(criteria as any).fgts,
+          momentoMeses: 0, // pediu visita agora
+          criteriosClaros: truthy((criteria as any).tipo || (criteria as any).dormitorios),
+          localDefinido: truthy((criteria as any).bairro || (criteria as any).cidade),
+          engajamentoRapido: true
         });
-        const stage = sc >= 80 ? "A" : sc >= 60 ? "B" : "C";
-        try { await ticket.update({ leadScore: sc, leadStage: stage }); } catch {}
+        try { await ticket.update({ leadScore: sc, leadStage: stage } as any); } catch {}
         try { await ltm.upsert(companyId, contact.id, [{ key: "lead_score", value: String(sc), confidence: 0.9 }]); } catch {}
       } catch {}
       return;
@@ -903,21 +921,23 @@ async function handleOpenAiCore(params: {
       if (facts?.length) await ltm.upsert(companyId, contact?.id, facts);
     } catch {}
 
-    // score após lista
+    // ✅ score após lista
     try {
-      const sc = scoreLead({
-        income: Number(String((criteria as any).renda || "").replace(/[^\d]/g, "")) || null,
-        downPaymentPct: null,
-        hasFGTS: !!(criteria as any).fgts,
-        moment: (criteria as any).momento || null,
-        hasObjectiveCriteria: !!(criteria as any).tipo || !!(criteria as any).dormitorios,
-        hasClearGeo: !!(criteria as any).bairro || !!(criteria as any).cidade,
-        engagementFast: true
+      const { score: sc, stage } = scoreLead({
+        rendaFamiliar: Number(String((criteria as any).renda || "").replace(/[^\d]/g, "")) || undefined,
+        entradaPercent: undefined,
+        temFGTS: !!(criteria as any).fgts,
+        momentoMeses: mapMomentoToMeses((criteria as any).momento || null),
+        criteriosClaros: truthy((criteria as any).tipo || (criteria as any).dormitorios),
+        localDefinido: truthy((criteria as any).bairro || (criteria as any).cidade),
+        engajamentoRapido: true
       });
-      const stage = sc >= 80 ? "A" : sc >= 60 ? "B" : "C";
-      try { await ticket.update({ leadScore: sc, leadStage: stage }); } catch {}
+      try { await ticket.update({ leadScore: sc, leadStage: stage } as any); } catch {}
       try { await ltm.upsert(companyId, contact.id, [{ key: "lead_score", value: String(sc), confidence: 0.9 }]); } catch {}
     } catch {}
+
+    // agenda follow-ups porque houve proposta/lista real
+    try { await scheduleLeadFollowups(ticket); } catch {}
 
     const newState: any = await loadState(ticket.id).catch(() => (convoState || {}));
     await saveState(ticket.id, {

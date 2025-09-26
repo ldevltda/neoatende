@@ -1,18 +1,23 @@
-export function scoreLead(s: {
-  income?: number | null;
-  downPaymentPct?: number | null; // % da entrada sobre o ticket alvo (quando souber)
-  hasFGTS?: boolean | null;
-  moment?: "agora"|"1-3m"|"3-6m"|"pesquisando"|null;
-  hasObjectiveCriteria?: boolean | null; // tipo, dorms, etc.
-  hasClearGeo?: boolean | null;          // cidade/bairro definidos
-  engagementFast?: boolean | null;       // respondeu rápido
-}): number {
-  let sc = 0;
-  if (s.income) sc += 30;
-  if ((s.downPaymentPct != null && s.downPaymentPct >= 0.10) || s.hasFGTS) sc += 25;
-  if (s.moment === "agora" || s.moment === "1-3m") sc += 20;
-  if (s.hasObjectiveCriteria) sc += 10;
-  if (s.hasClearGeo) sc += 10;
-  if (s.engagementFast) sc += 5;
-  return Math.max(0, Math.min(100, sc));
+export type LeadInputs = {
+  rendaFamiliar?: number;        // R$
+  entradaPercent?: number;       // 0..100
+  temFGTS?: boolean;
+  momentoMeses?: number;         // 0 | 1..3 | 3..6 | 999 ("pesquisando")
+  criteriosClaros?: boolean;     // tipologia/quartos/area definidos
+  localDefinido?: boolean;       // cidade/bairros
+  engajamentoRapido?: boolean;   // respondeu < 10min (exemplo)
+};
+
+export function scoreLead(i: LeadInputs) {
+  let score = 0;
+  if ((i.rendaFamiliar || 0) > 0) score += 30;
+  if ((i.entradaPercent || 0) >= 10 || i.temFGTS) score += 25;
+  if ((i.momentoMeses || 999) <= 3) score += 20;
+  if (i.criteriosClaros) score += 10;
+  if (i.localDefinido) score += 10;
+  if (i.engajamentoRapido) score += 5;
+
+  score = Math.max(0, Math.min(100, score));
+  const stage: "A" | "B" | "C" = score >= 80 ? "A" : score >= 60 ? "B" : "C";
+  return { score, stage };
 }

@@ -2,7 +2,9 @@ import { proto, WASocket } from "baileys";
 import Contact from "../../models/Contact";
 import Setting from "../../models/Setting";
 import Ticket from "../../models/Ticket";
-import { getBodyMessage, isNumeric, sleep, validaCpfCnpj, sendMessageImage, sendMessageLink, makeid } from "./wbotMessageListener";
+// ✅ usa o shim de utilitários
+import { getBodyMessage, isNumeric, sleep, validaCpfCnpj, sendMessageImage, sendMessageLink, makeid } from "./utils/wbotShims";
+
 import formatBody from "../../helpers/Mustache";
 
 import puppeteer from "puppeteer";
