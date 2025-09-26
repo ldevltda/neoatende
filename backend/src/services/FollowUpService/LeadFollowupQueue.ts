@@ -1,5 +1,3 @@
-// backend/src/services/FollowUpService/LeadFollowupQueue.ts
-
 import Queue from "bull";
 import { getTicketById, sendWhatsAppText, getLastInboundAt } from "./helpers";
 import { logger } from "../../utils/logger";
@@ -8,10 +6,10 @@ type JobData = { ticketId: number; companyId: number; step: "6h" | "12h" | "24h"
 
 let leadQueue: Queue.Queue<JobData> | null = null;
 
+/** Cria a fila usando SOMENTE a URL do Redis que já está no ambiente.
+ *  Isso evita o erro do Bull: "enableReadyCheck/maxRetriesPerRequest for bclient/subscriber". */
 function createBullQueue(): Queue.Queue<JobData> {
   const url = process.env.REDIS_URL || "redis://127.0.0.1:6379";
-  // NÃO passe objeto de opções aqui — apenas a URL.
-  // O Bull v3 cria client/subscriber/bclient corretamente e evita o erro 1873.
   return new Queue<JobData>("lead-followups", url);
 }
 
@@ -25,12 +23,13 @@ export function startLeadFollowupQueue() {
     const ticket = await getTicketById(ticketId, companyId);
     if (!ticket) return;
 
+    // se o cliente respondeu depois do agendamento, não manda
     const lastInboundAt = await getLastInboundAt(ticketId, companyId);
     if (lastInboundAt && lastInboundAt > new Date(job.timestamp)) return;
 
-    const nome = (ticket as any)?.contact?.name || "tudo bem";
+    const nome   = (ticket as any)?.contact?.name || "tudo bem";
     const bairro = (ticket as any)?.lastSuggestedNeighborhood || "";
-    const valor = (ticket as any)?.lastSuggestedPrice || "";
+    const valor  = (ticket as any)?.lastSuggestedPrice || "";
 
     let msg = "";
     if (step === "6h") {
