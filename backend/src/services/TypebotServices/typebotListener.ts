@@ -2,7 +2,7 @@ import axios, { AxiosRequestConfig } from "axios";
 import Ticket from "../../models/Ticket";
 import QueueIntegrations from "../../models/QueueIntegrations";
 import { WASocket, delay, proto } from "baileys";
-import { getBodyMessage } from "../WbotServices/wbotMessageListener";
+import { getBodyMessage } from "../WbotServices/utils/wbotShims";
 import { logger } from "../../utils/logger";
 import { isNil } from "lodash";
 import UpdateTicketService from "../TicketServices/UpdateTicketService";

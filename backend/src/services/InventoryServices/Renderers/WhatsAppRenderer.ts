@@ -4,6 +4,8 @@ type ListOptions = {
   headerTitle?: string;
   showIndexEmojis?: boolean;
   categoryHint?: string;
+  /** Resumo dos critérios (ex.: "em Coqueiros, Florianópolis") */
+  criteriaSummary?: string;
 };
 
 function toBR(n: any) {
@@ -12,10 +14,39 @@ function toBR(n: any) {
   return num.toLocaleString("pt-BR", { maximumFractionDigits: 2 });
 }
 
+/**
+ * Monta um título automático quando headerTitle não for fornecido.
+ * Usa categoryHint e criteriaSummary, se existirem.
+ * Exemplos:
+ *  - "Opções de imóveis em Coqueiros, Florianópolis"
+ *  - "Opções encontradas em Florianópolis"
+ *  - "Opções encontradas"
+ */
+function buildAutoHeaderTitle(opts: ListOptions) {
+  const parts: string[] = [];
+
+  if (opts.categoryHint) {
+    // capitaliza levemente a primeira letra (opcional)
+    const cat = String(opts.categoryHint).trim();
+    parts.push(cat);
+  }
+
+  if (opts.criteriaSummary) {
+    parts.push(opts.criteriaSummary.trim());
+  }
+
+  if (parts.length === 0) return "Opções encontradas";
+  if (opts.categoryHint) return `Opções de ${parts.join(" ")}`;
+  return `Opções encontradas ${parts.join(" ")}`;
+}
+
 export function renderWhatsAppList(items: any[], opts: ListOptions = {}): string {
   const max = opts.maxItems ?? 3;
   const take = (items || []).slice(0, max);
-  if (!take.length) return "Não encontrei imóveis com esses filtros agora. Quer ajustar bairro, preço ou nº de dormitórios?";
+
+  if (!take.length) {
+    return "Não encontrei imóveis com esses filtros agora. Quer ajustar bairro, preço ou nº de dormitórios?";
+  }
 
   const rows = take.map((p, i) => {
     const title = p.title || p.titulo || p.name || p.nome || `Imóvel ${i + 1}`;
@@ -40,7 +71,10 @@ export function renderWhatsAppList(items: any[], opts: ListOptions = {}): string
     return parts.join("\n");
   });
 
-  const head = opts.headerTitle ? `*${opts.headerTitle}*\n\n` : "";
+  // Cabeçalho: prioriza headerTitle explícito; senão monta automático com categoryHint/criteriaSummary
+  const headerTitle = opts.headerTitle ?? buildAutoHeaderTitle(opts);
+  const head = headerTitle ? `*${headerTitle}*\n\n` : "";
+
   return `${head}${rows.join("\n\n")}\n\n` +
          `Para detalhes, envie *#1* ou *detalhes 1*. ` +
          `Para mais opções, diga *ver mais*. ` +

@@ -1,5 +1,3 @@
-// teste
-
 import * as Sentry from "@sentry/node";
 import makeWASocket, {
   WASocket,
